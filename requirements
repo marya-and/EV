@@ -1,7 +1,19 @@
-streamlit
-numpy
-pandas
-matplotlib
-plotly
-scikit-learn
-scipy
+# Core
+streamlit==1.51.0
+pandas==2.3.3
+numpy==2.3.5
+
+# Plotting
+matplotlib==3.9.2
+seaborn==0.13.2
+plotly==5.24.1
+
+# ML / Stats
+scikit-learn==1.5.2
+scipy==1.14.1
+
+# Optional – only if you used them
+xgboost==2.1.2
+lightgbm==4.5.0
+torch==2.5.1
+torchvision==0.20.1
