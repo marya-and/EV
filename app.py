@@ -1,5 +1,3 @@
-# app.py — Robust EV Battery SOH & RUL Dashboard (final project version)
-# Run locally: streamlit run app.py
 
 from __future__ import annotations
 import os, re, zipfile, warnings
@@ -1855,3 +1853,4 @@ with tabs[11]:
         file_name="features_export.csv",
         mime="text/csv",
     )
+
