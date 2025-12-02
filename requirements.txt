@@ -1,19 +1,9 @@
-# Core
-streamlit==1.51.0
-pandas==2.3.3
-numpy==2.3.5
-
-# Plotting
-matplotlib>=3.9
-seaborn==0.13.2
-plotly==5.24.1
-
-# ML / Stats
-scikit-learn==1.5.2
-scipy==1.14.1
-
-# Optional – only if you used them
-xgboost==2.1.2
-lightgbm==4.5.0
-torch==2.5.1
-torchvision==0.20.1
+streamlit>=1.36
+pandas>=2.0
+numpy>=1.24
+matplotlib>=3.7
+plotly>=5.20
+scikit-learn>=1.3
+seaborn>=0.13
+scipy>=1.11
+xgboost>=2.0
