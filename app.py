@@ -10,10 +10,10 @@
 #   - Handles missing data (MCAR + MAR)
 #   - Does IDA, EDA, encoding, imputation, modeling, forecasting, anomaly detection
 #   - Supports multi-dataset selection & comparison
-#   - Includes a Deep Learning Lab tab (Keras MLP on SOH)
 
 from __future__ import annotations
 
+import os
 import warnings
 from typing import Dict, Tuple, List, Optional
 
@@ -28,6 +28,7 @@ from plotly.subplots import make_subplots
 
 from sklearn.model_selection import (
     train_test_split,
+    GroupKFold,
     RandomizedSearchCV,
 )
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
@@ -411,6 +412,7 @@ st.sidebar.header("Data Sources (3+ datasets)")
 demo_sets = get_demo_datasets()
 dataset_names = list(demo_sets.keys())
 
+# Optional: later you can add uploads and append to this dict
 st.sidebar.caption(
     "Built-in demo datasets: Urban / Highway / Mixed driving conditions."
 )
@@ -489,13 +491,13 @@ def combine_selected(selected: List[str]) -> Tuple[pd.DataFrame, pd.DataFrame]:
     raws = []
     feats = []
     for name in selected:
-        raw_ds, feat_ds = demo_sets[name]
-        raw_ds = raw_ds.copy()
-        feat_ds = feat_ds.copy()
-        raw_ds["dataset"] = name
-        feat_ds["dataset"] = name
-        raws.append(raw_ds)
-        feats.append(feat_ds)
+        raw, feat = demo_sets[name]
+        raw = raw.copy()
+        feat = feat.copy()
+        raw["dataset"] = name
+        feat["dataset"] = name
+        raws.append(raw)
+        feats.append(feat)
     return pd.concat(raws, ignore_index=True), pd.concat(
         feats, ignore_index=True
     )
@@ -521,7 +523,6 @@ feat["bucket"] = pd.cut(
     labels=["EOL", "Aging", "Monitor", "Healthy"],
     include_lowest=True,
 )
-
 
 # =============================================================================
 # MISSINGNESS & IMPUTATION UTILITIES
@@ -632,7 +633,6 @@ tabs = st.tabs(
         "Anomaly & OOD",
         "Text & Encoding",
         "Real-World Insights",
-        "Deep Learning Lab",
         "Export & Data Dictionary",
     ]
 )
@@ -1734,115 +1734,9 @@ with tabs[10]:
     )
 
 # -----------------------------------------------------------------------------
-# 12. DEEP LEARNING LAB
+# 12. EXPORT & DATA DICTIONARY
 # -----------------------------------------------------------------------------
 with tabs[11]:
-    explain(
-        "Deep Learning Lab",
-        [
-            "Explicit deep-learning example using a Keras Multi-Layer Perceptron (MLP) on SOH.",
-            "MLP = Multi-Layer Perceptron neural network (several fully-connected layers).",
-            "This tab is optional at runtime: it requires `tensorflow` or `tensorflow-cpu` installed.",
-        ],
-    )
-
-    try:
-        from tensorflow.keras.models import Sequential
-        from tensorflow.keras.layers import Dense, Dropout
-        from tensorflow.keras.callbacks import EarlyStopping
-
-        TF_OK = True
-    except Exception as e:
-        TF_OK = False
-        err_msg = str(e)
-
-    if not TF_OK:
-        st.warning(
-            "TensorFlow / Keras is not installed. "
-            "To run the Deep Learning Lab, add `tensorflow` (or `tensorflow-cpu`) to requirements.txt."
-        )
-    else:
-        dfy = feat.dropna(subset=["soh"]).copy()
-        if dfy.shape[0] < max(200, min_labels_train):
-            st.info(
-                f"Need at least {max(200, min_labels_train)} labeled rows for deep learning; currently {dfy.shape[0]}."
-            )
-        else:
-            st.markdown("**Preparing data for Keras MLP**")
-
-            # Use numeric engineered features only for simplicity
-            X = prep_numeric_matrix(
-                dfy.drop(columns=["soh", "cap_ah"]), min_non_na=5
-            )
-            y = dfy["soh"].astype("float32").values
-
-            # Downsample if huge
-            if X.shape[0] > 6000:
-                idx = np.random.default_rng(7).choice(
-                    X.index, size=6000, replace=False
-                )
-                X = X.loc[idx]
-                y = y[X.index.to_numpy()]
-
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X.values)
-
-            Xtr, Xte, ytr, yte = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=7
-            )
-
-            st.write(f"Training samples: {Xtr.shape[0]}, Test samples: {Xte.shape[0]}")
-            st.write(f"Input dimension (features): {Xtr.shape[1]}")
-
-            model = Sequential(
-                [
-                    Dense(128, activation="relu", input_shape=(Xtr.shape[1],)),
-                    Dropout(0.2),
-                    Dense(64, activation="relu"),
-                    Dropout(0.2),
-                    Dense(1, activation="linear"),
-                ]
-            )
-            model.compile(optimizer="adam", loss="mse", metrics=["mae"])
-
-            es = EarlyStopping(
-                monitor="val_loss",
-                patience=8,
-                restore_best_weights=True,
-            )
-
-            history = model.fit(
-                Xtr,
-                ytr,
-                validation_split=0.2,
-                epochs=80,
-                batch_size=64,
-                callbacks=[es],
-                verbose=0,
-            )
-
-            loss, mae = model.evaluate(Xte, yte, verbose=0)
-            st.write(f"Deep MLP test MAE: **{mae:.4f}**, test MSE: {loss:.4f}")
-
-            # Plot training vs validation loss
-            fig = plt.figure(figsize=(7, 3))
-            plt.plot(history.history["loss"], label="Train loss")
-            plt.plot(history.history["val_loss"], label="Val loss")
-            plt.xlabel("Epoch")
-            plt.ylabel("MSE loss")
-            plt.title("MLP training curves")
-            plt.legend()
-            plt.grid(alpha=0.3)
-            st.pyplot(fig, clear_figure=True)
-
-            st.caption(
-                "This MLP is a true neural network model (deep learning) with two hidden layers and dropout regularization."
-            )
-
-# -----------------------------------------------------------------------------
-# 13. EXPORT & DATA DICTIONARY
-# -----------------------------------------------------------------------------
-with tabs[12]:
     explain(
         "Export & Data Dictionary",
         [
