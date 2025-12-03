@@ -387,6 +387,9 @@ def clean_and_integrate(per_cycle_sources, cell_metadata, env_profile):
 
     combined = feature_engineering(combined)
 
+    # 🔧 IMPORTANT: remove any duplicate column names globally
+    combined = combined.loc[:, ~combined.columns.duplicated()]
+
     for col in [
         "manufacturer",
         "cooling",
@@ -464,6 +467,9 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
     dfy = df.dropna(subset=[target]).copy()
     if dfy.empty:
         return None
+
+    # Make sure there are no duplicate columns inside dfy
+    dfy = dfy.loc[:, ~dfy.columns.duplicated()]
 
     drop_cols = [target, "cap_ah"]
     feature_cols = [c for c in dfy.columns if c not in drop_cols]
@@ -728,7 +734,10 @@ with tabs[1]:
     )
 
     st.markdown("### Combined dataset (after cleaning + feature engineering)")
-    st.dataframe(current_df.head(20), use_container_width=True)
+    st.dataframe(
+        current_df.loc[:, ~current_df.columns.duplicated()].head(20),
+        use_container_width=True,
+    )
 
     st.markdown("#### Column info & summary statistics")
     col1, col2 = st.columns([1.2, 1.4])
@@ -993,7 +1002,8 @@ with tabs[4]:
             f"Not enough labelled rows for target '{target}'. Need at least {MIN_LABELS_TRAIN}."
         )
     else:
-        dfy = enc["dfy"]
+        # ensure no duplicate columns before displaying
+        dfy = enc["dfy"].loc[:, ~enc["dfy"].columns.duplicated()]
         X_tr = enc["X_tr"]
         X_te = enc["X_te"]
         y_train = enc["y_train"]
@@ -1030,8 +1040,12 @@ with tabs[4]:
             if c in dfy.columns
         ]
         show_cols += extra
-        show_cols = [c for c in show_cols if c in dfy.columns]
-        st.dataframe(dfy[show_cols].head(10), use_container_width=True)
+        # final guard: only keep columns that exist & remove duplicates
+        show_cols_unique = []
+        for c in show_cols:
+            if c in dfy.columns and c not in show_cols_unique:
+                show_cols_unique.append(c)
+        st.dataframe(dfy[show_cols_unique].head(10), use_container_width=True)
 
         st.markdown("### AFTER encoding (design matrix)")
         st.dataframe(encoded_train_df.head(10), use_container_width=True)
