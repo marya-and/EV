@@ -38,6 +38,7 @@ from sklearn.ensemble import (
     RandomForestRegressor,
     RandomForestClassifier,
     GradientBoostingRegressor,
+    GradientBoostingClassifier,   # ✅ added
 )
 from sklearn.neural_network import MLPRegressor
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -704,6 +705,7 @@ with tabs[3]:
             title=f"Imputation RMSE for {target_col}",
         )
         st.plotly_chart(fig_imp, use_container_width=True)
+
 
 # ---------------------------------------------------------------------
 # Helper for encoding & modelling
