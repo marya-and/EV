@@ -23,6 +23,7 @@ from sklearn.metrics import (
     r2_score,
     accuracy_score,
 )
+
 from sklearn.ensemble import (
     RandomForestRegressor,
     RandomForestClassifier,
@@ -32,7 +33,7 @@ from sklearn.ensemble import (
 from sklearn.neural_network import MLPRegressor, MLPClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-# Optional libs
+# optional libraries
 try:
     from statsmodels.tsa.ar_model import AutoReg
     STATS_OK = True
@@ -46,7 +47,7 @@ except Exception:
     XGB_OK = False
 
 # -------------------------------------------------------------------
-# STREAMLIT CONFIG & THEME
+# STREAMLIT THEME / PAGE CONFIG
 # -------------------------------------------------------------------
 st.set_page_config(
     page_title="Robust EV Battery SOH & RUL",
@@ -92,7 +93,9 @@ PLOTLY_TEMPLATE = "plotly_dark"
 EOL_THRESH_DEFAULT = 0.80
 MIN_LABELS_TRAIN_DEFAULT = 40
 
-
+# -------------------------------------------------------------------
+# SMALL HELPERS
+# -------------------------------------------------------------------
 def kpi(label, value, sub=""):
     if isinstance(value, float):
         vtxt = f"{value:,.3f}"
@@ -123,7 +126,7 @@ def numeric_cols(df: pd.DataFrame):
 def corr_heatmap(df: pd.DataFrame, title: str, key: str):
     cols = [c for c in numeric_cols(df) if df[c].notna().sum() > 10]
     if len(cols) < 2:
-        st.info("Need at least two numeric columns with enough data.")
+        st.info("Need at least two numeric columns with enough non-missing values.")
         return
     C = df[cols].corr()
     fig = px.imshow(
@@ -146,15 +149,15 @@ def pct_missing(df: pd.DataFrame) -> float:
 
 
 # -------------------------------------------------------------------
-# SYNTHETIC EV DATA: 3 PER-CYCLE SOURCES + METADATA + ENVIRONMENT
+# SYNTHETIC EV DATA: 3 MAIN SOURCES + 2 AUX SOURCES
 # -------------------------------------------------------------------
 @st.cache_data
 def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) -> pd.DataFrame:
     """
     Synthetic EV dataset for one usage profile:
     - 'Urban', 'Highway', or 'Mixed'
-    - Per-cycle: SOH, capacity, features, temperatures, text description
-    - Includes MCAR + MAR missingness
+    - Per-cycle features, SOH, capacity, text usage description
+    - MCAR + MAR missingness
     """
     rng = np.random.default_rng(seed)
     rows = []
@@ -189,11 +192,13 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
         cap0 = rng.normal(2.6, 0.04)
 
         for cyc in range(n_cycles):
+            # SOH decay
             deg = p["deg_rate"]
             soh_mean = 1.0 - deg * cyc + rng.normal(0, 0.002)
             soh = float(np.clip(soh_mean, 0.6, 1.03))
             cap = cap0 * soh
 
+            # throughput / energy
             q_abs = rng.normal(0.30 + 0.005 * cyc, 0.04)
             q_abs = float(max(q_abs, 0.05))
 
@@ -203,6 +208,7 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
 
             e_abs = q_abs * v_mean + rng.normal(0, 0.05)
 
+            # temperatures
             temp_mean = rng.normal(p["temp0"] + p["temp_slope"] * cyc, 3.0)
             temp_max = temp_mean + abs(rng.normal(3.0, 1.0))
 
@@ -232,6 +238,7 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
 
     df = pd.DataFrame(rows)
 
+    # bucket from SOH
     def bucket(soh):
         if pd.isna(soh):
             return "Missing"
@@ -252,7 +259,7 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
     m_mcar_v = rng.random(len(df)) < 0.04
     df.loc[m_mcar_v, "v_std"] = np.nan
 
-    # MAR: hotter cycles → missing SOH and capacity
+    # MAR: hotter cycles → missing SOH, capacity
     high_temp = df["temp_max"] > (p["temp0"] + 12)
     mar_mask = high_temp & (rng.random(len(df)) < 0.35)
     df.loc[mar_mask, ["soh", "cap_ah"]] = np.nan
@@ -266,18 +273,14 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
 
 @st.cache_data
 def build_metadata_tables(per_cycle_sources: dict[str, pd.DataFrame]):
-    """
-    Additional data sources:
-    - cell_metadata: one row per cell (manufacturer, cooling, segment)
-    - env_profile: one row per dataset (region, climate index)
-    """
-    # cell metadata
+    # cell_metadata: per cell
     cells = []
     for dsname, df in per_cycle_sources.items():
         for cid in sorted(df["cell_id"].unique()):
             cells.append((dsname, cid))
-    meta_rows = []
+
     rng = np.random.default_rng(42)
+    meta_rows = []
     for ds, cid in cells:
         manufacturer = rng.choice(["OEM_A", "OEM_B", "OEM_C"])
         cooling = rng.choice(["air", "liquid"])
@@ -293,7 +296,7 @@ def build_metadata_tables(per_cycle_sources: dict[str, pd.DataFrame]):
         )
     cell_metadata = pd.DataFrame(meta_rows)
 
-    # environment profile
+    # env_profile: per dataset
     env_rows = [
         dict(dataset="Urban", region="hot city", climate_index="hot-humid"),
         dict(dataset="Highway", region="mild corridor", climate_index="temperate"),
@@ -305,19 +308,15 @@ def build_metadata_tables(per_cycle_sources: dict[str, pd.DataFrame]):
 
 
 def feature_engineering(df: pd.DataFrame):
-    """
-    Multiple feature engineering techniques:
-    - temp_spread = temp_max - temp_mean
-    - stress_index = combination of high temp and current
-    - normalized q_abs and e_abs
-    - cycle_bin (ordinal / categorical)
-    """
     d = df.copy()
+
+    # temperature spread
     if {"temp_max", "temp_mean"}.issubset(d.columns):
         d["temp_spread"] = d["temp_max"] - d["temp_mean"]
     else:
         d["temp_spread"] = np.nan
 
+    # stress index from temperature and current
     if {"temp_max", "current_rms"}.issubset(d.columns):
         d["stress_index"] = (d["temp_max"] - d["temp_max"].min()) / (
             d["temp_max"].max() - d["temp_max"].min() + 1e-6
@@ -327,6 +326,7 @@ def feature_engineering(df: pd.DataFrame):
     else:
         d["stress_index"] = np.nan
 
+    # normalized throughput / energy
     if "cap_ah" in d.columns:
         d["q_norm"] = d["q_abs"] / (d["cap_ah"] + 1e-6)
         d["e_norm"] = d["e_abs"] / (d["cap_ah"] + 1e-6)
@@ -334,6 +334,7 @@ def feature_engineering(df: pd.DataFrame):
         d["q_norm"] = np.nan
         d["e_norm"] = np.nan
 
+    # cycle binning
     if "cycle" in d.columns:
         d["cycle_bin"] = pd.cut(
             d["cycle"],
@@ -348,24 +349,19 @@ def feature_engineering(df: pd.DataFrame):
 
 @st.cache_data
 def get_all_sources():
-    # 3 main sources: per-cycle Urban / Highway / Mixed
     urban = generate_ev_dataset("Urban", seed=0)
     highway = generate_ev_dataset("Highway", seed=1)
     mixed = generate_ev_dataset("Mixed", seed=2)
     per_cycle_sources = {"Urban": urban, "Highway": highway, "Mixed": mixed}
 
-    # 2 additional sources: cell_metadata, env_profile
     cell_metadata, env_profile = build_metadata_tables(per_cycle_sources)
-
     return per_cycle_sources, cell_metadata, env_profile
 
 
 def clean_and_integrate(per_cycle_sources, cell_metadata, env_profile):
-    """Advanced cleaning + complex integration of 3+ sources."""
     cleaned_sources = {}
     for name, df in per_cycle_sources.items():
         d = df.copy()
-        n_before = len(d)
         d = d.drop_duplicates()
         d["dataset"] = d["dataset"].astype("category")
         d["cell_id"] = d["cell_id"].astype("category")
@@ -376,15 +372,12 @@ def clean_and_integrate(per_cycle_sources, cell_metadata, env_profile):
 
     combined = pd.concat(cleaned_sources.values(), ignore_index=True)
 
-    # integrate cell metadata
     combined = combined.merge(
         cell_metadata,
         on=["dataset", "cell_id"],
         how="left",
         validate="m:1",
     )
-
-    # integrate environment profile
     combined = combined.merge(
         env_profile,
         on="dataset",
@@ -392,11 +385,16 @@ def clean_and_integrate(per_cycle_sources, cell_metadata, env_profile):
         validate="m:1",
     )
 
-    # feature engineering
     combined = feature_engineering(combined)
 
-    # cast new categoricals
-    for col in ["manufacturer", "cooling", "vehicle_segment", "region", "climate_index", "cycle_bin"]:
+    for col in [
+        "manufacturer",
+        "cooling",
+        "vehicle_segment",
+        "region",
+        "climate_index",
+        "cycle_bin",
+    ]:
         if col in combined.columns:
             combined[col] = combined[col].astype("category")
 
@@ -404,421 +402,64 @@ def clean_and_integrate(per_cycle_sources, cell_metadata, env_profile):
 
 
 # -------------------------------------------------------------------
-# SIDEBAR CONTROLS
+# LOAD SYNTHETIC DATA SOURCES
 # -------------------------------------------------------------------
 per_cycle_sources, cell_metadata, env_profile = get_all_sources()
-cleaned_sources, combined_all = clean_and_integrate(per_cycle_sources, cell_metadata, env_profile)
+cleaned_sources, combined_all = clean_and_integrate(
+    per_cycle_sources, cell_metadata, env_profile
+)
 
+# -------------------------------------------------------------------
+# SIDEBAR CONTROLS
+# -------------------------------------------------------------------
 st.sidebar.title("Controls")
 
 ds_names = list(per_cycle_sources.keys())
 selected_sources = st.sidebar.multiselect(
-    "Select dataset(s)",
+    "Select dataset(s) to analyse",
     ds_names,
     default=ds_names,
-    help="Analyse one source, multiple sources, or all combined.",
+    help="Analyse one dataset, multiple, or all combined.",
 )
 if not selected_sources:
     selected_sources = ds_names
 
-# filter combined by selected sources
 current_df = combined_all[combined_all["dataset"].isin(selected_sources)].copy()
 
 impute_choice = st.sidebar.selectbox(
     "Imputation method (for modelling)",
     ["Simple (median)", "KNN (k=5)", "Iterative (MICE)"],
+    index=0,
 )
-task_type = st.sidebar.radio("Modelling task", ["SOH regression", "Bucket classification"])
 
-use_mlp = st.sidebar.checkbox("Use MLP (neural network – deep learning)", value=True)
-use_xgb = st.sidebar.checkbox("Use XGBoost ensemble (if installed)", value=XGB_OK)
+task_type = st.sidebar.radio("Modelling task", ["SOH regression", "Bucket classification"])
 
 st.sidebar.markdown("---")
 EOL_THRESH = st.sidebar.slider("EOL threshold (SOH)", 0.6, 0.95, EOL_THRESH_DEFAULT, 0.01)
-MIN_LABELS_TRAIN = st.sidebar.slider("Min labelled rows to train", 20, 200, MIN_LABELS_TRAIN_DEFAULT, 5)
+MIN_LABELS_TRAIN = st.sidebar.slider(
+    "Min labelled rows required to train a model",
+    20,
+    200,
+    MIN_LABELS_TRAIN_DEFAULT,
+    5,
+)
 
 st.sidebar.markdown("---")
-tune_rf = st.sidebar.checkbox("Run RandomizedSearchCV (RF hyperparameter tuning, HPC)", value=False)
+tune_rf = st.sidebar.checkbox(
+    "Run RF hyperparameter tuning (RandomizedSearchCV, HPC demo)", value=False
+)
 
-# session state for storing last model results
 if "last_results" not in st.session_state:
     st.session_state["last_results"] = {}
 
 # -------------------------------------------------------------------
-# TABS (SYSTEMATIC)
-# -------------------------------------------------------------------
-tabs = st.tabs(
-    [
-        "🏠 Summary",
-        "📦 Data Overview",
-        "📊 EDA & Dataset Comparison",
-        "🧩 Missingness Lab",
-        "🔁 Encoding Demo & Classical Models",
-        "🧠 Deep Learning & Ensembles",
-        "📈 SOH & RUL + Time-Series",
-        "🌍 Insights & Rubric",
-        "💾 Export",
-    ]
-)
-
-# -------------------------------------------------------------------
-# 1. SUMMARY
-# -------------------------------------------------------------------
-with tabs[0]:
-    explain(
-        "Summary dashboard",
-        [
-            "High-level KPIs for the selected dataset(s).",
-            "SOH curves, energy throughput, health buckets, and missingness.",
-            "Demonstrates multi-source integration at a glance.",
-        ],
-    )
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        kpi("Data sources selected", len(selected_sources), ", ".join(selected_sources))
-    with c2:
-        kpi("Unique cells", int(current_df["cell_id"].nunique()), "cell_id")
-    with c3:
-        kpi("Rows (after cleaning & integration)", len(current_df))
-    with c4:
-        kpi("Avg % missing", f"{pct_missing(current_df):.1f}%", "across all columns")
-
-    st.markdown("### SOH and energy at a glance")
-    left, mid, right = st.columns([1.4, 1.1, 1.1])
-
-    with left:
-        df_plot = current_df.dropna(subset=["soh"]).copy()
-        if not df_plot.empty:
-            fig = px.line(
-                df_plot,
-                x="cycle",
-                y="soh",
-                color="cell_id",
-                facet_row="dataset",
-                template=PLOTLY_TEMPLATE,
-                height=350,
-                title="SOH vs cycle by cell and dataset",
-            )
-            fig.add_hline(
-                y=EOL_THRESH,
-                line_dash="dot",
-                line_color="red",
-                annotation_text="EOL threshold",
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No SOH labels available for selected datasets.")
-
-    with mid:
-        if "e_abs" in current_df.columns:
-            g = (
-                current_df.groupby(["dataset", "cell_id"], as_index=False)["e_abs"]
-                .sum()
-                .sort_values("e_abs", ascending=False)
-            )
-            fig2 = px.bar(
-                g,
-                x="cell_id",
-                y="e_abs",
-                color="dataset",
-                template=PLOTLY_TEMPLATE,
-                title="Total energy throughput per cell",
-                height=350,
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("Feature e_abs not available.")
-
-    with right:
-        if "bucket" in current_df.columns:
-            counts = (
-                current_df["bucket"]
-                .value_counts(dropna=False)
-                .rename_axis("bucket")
-                .reset_index(name="count")
-            )
-            fig3 = px.pie(
-                counts,
-                values="count",
-                names="bucket",
-                hole=0.5,
-                template=PLOTLY_TEMPLATE,
-                title="Health bucket distribution",
-                height=350,
-            )
-            st.plotly_chart(fig3, use_container_width=True)
-        else:
-            st.info("Bucket labels not found.")
-
-# -------------------------------------------------------------------
-# 2. DATA OVERVIEW
-# -------------------------------------------------------------------
-with tabs[1]:
-    explain(
-        "Data overview",
-        [
-            "View integrated dataset after cleaning and feature engineering.",
-            "Understand types, ranges and missingness per column.",
-            "Show extra sources: cell metadata and environment profile.",
-        ],
-    )
-
-    st.markdown("### Combined dataset (after cleaning + feature engineering)")
-    st.dataframe(current_df.head(20), use_container_width=True)
-
-    st.markdown("#### Column info & summary statistics")
-    col1, col2 = st.columns([1.2, 1.4])
-
-    with col1:
-        dtype_df = pd.DataFrame(
-            {
-                "column": current_df.columns,
-                "dtype": [str(current_df[c].dtype) for c in current_df.columns],
-                "n_unique": [current_df[c].nunique(dropna=True) for c in current_df.columns],
-                "pct_missing": [100 * current_df[c].isna().mean() for c in current_df.columns],
-            }
-        )
-        st.dataframe(dtype_df, use_container_width=True)
-
-    with col2:
-        st.dataframe(
-            current_df.describe(include="all").transpose(),
-            use_container_width=True,
-        )
-
-    st.markdown("### Per-dataset summary")
-    per_ds = (
-        current_df.groupby("dataset")
-        .agg(
-            n_rows=("soh", "size"),
-            n_cells=("cell_id", "nunique"),
-            n_cycles=("cycle", "nunique"),
-            mean_soh=("soh", "mean"),
-            pct_missing=("soh", lambda s: 100 * s.isna().mean()),
-        )
-        .reset_index()
-    )
-    st.dataframe(per_ds, use_container_width=True)
-
-    fig_ds = px.bar(
-        per_ds,
-        x="dataset",
-        y="mean_soh",
-        template=PLOTLY_TEMPLATE,
-        title="Average SOH by dataset",
-    )
-    st.plotly_chart(fig_ds, use_container_width=True)
-
-    st.markdown("### Cell metadata (2nd data source)")
-    st.dataframe(cell_metadata.head(10), use_container_width=True)
-
-    st.markdown("### Environment profile (3rd data source)")
-    st.dataframe(env_profile, use_container_width=True)
-
-# -------------------------------------------------------------------
-# 3. EDA & DATASET COMPARISON
-# -------------------------------------------------------------------
-with tabs[2]:
-    explain(
-        "EDA & Dataset comparison",
-        [
-            "Multiple visualisations: histograms, boxplots, correlations, scatter, violin.",
-            "Compare distributions and relationships across datasets and engineered features.",
-        ],
-    )
-
-    numc = [c for c in numeric_cols(current_df) if c not in ["cycle"]]
-
-    st.markdown("### Histograms (by dataset)")
-    if numc:
-        col_hist = st.selectbox(
-            "Histogram feature",
-            numc,
-            index=numc.index("soh") if "soh" in numc else 0,
-        )
-        fig = px.histogram(
-            current_df,
-            x=col_hist,
-            color="dataset",
-            nbins=30,
-            template=PLOTLY_TEMPLATE,
-            barmode="overlay",
-        )
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.markdown("### Box and violin plots by dataset")
-    if numc:
-        col_box = st.selectbox(
-            "Box/violin feature",
-            numc,
-            index=numc.index("stress_index") if "stress_index" in numc else 0,
-            key="box_feat",
-        )
-        fig_box = px.box(
-            current_df,
-            x="dataset",
-            y=col_box,
-            color="dataset",
-            template=PLOTLY_TEMPLATE,
-            title=f"Box plot of {col_box} by dataset",
-        )
-        st.plotly_chart(fig_box, use_container_width=True)
-
-        fig_violin = px.violin(
-            current_df,
-            x="dataset",
-            y=col_box,
-            color="dataset",
-            box=True,
-            points="all",
-            template=PLOTLY_TEMPLATE,
-            title=f"Violin plot of {col_box} by dataset",
-        )
-        st.plotly_chart(fig_violin, use_container_width=True)
-
-    st.markdown("### Correlation heatmap (numeric)")
-    corr_heatmap(current_df, "Correlation heatmap", key="eda_corr")
-
-    st.markdown("### Scatter plot")
-    if len(numc) >= 2:
-        c1, c2 = st.columns(2)
-        with c1:
-            x_axis = st.selectbox("X-axis", numc, index=0, key="scatter_x")
-        with c2:
-            y_axis = st.selectbox("Y-axis", numc, index=1, key="scatter_y")
-
-        color_by = st.selectbox(
-            "Color points by",
-            ["dataset", "cell_id", "bucket", "vehicle_segment"],
-            index=0,
-        )
-        fig_sc = px.scatter(
-            current_df,
-            x=x_axis,
-            y=y_axis,
-            color=color_by,
-            hover_data=["cycle", "cell_id"],
-            template=PLOTLY_TEMPLATE,
-            height=500,
-        )
-        st.plotly_chart(fig_sc, use_container_width=True)
-
-# -------------------------------------------------------------------
-# 4. MISSINGNESS LAB
-# -------------------------------------------------------------------
-with tabs[3]:
-    explain(
-        "Missingness Lab",
-        [
-            "Quantify and visualise missing data.",
-            "Compare Simple / KNN / Iterative (MICE) imputation RMSE.",
-            "Connects directly to MCAR/MAR ideas from lecture.",
-        ],
-    )
-
-    numc = numeric_cols(current_df)
-    st.markdown("### Missing values summary")
-    if numc:
-        miss_cnt = current_df[numc].isna().sum()
-        miss_pct = current_df[numc].isna().mean() * 100
-        miss_df = pd.DataFrame(
-            {"missing_count": miss_cnt, "missing_pct": miss_pct}
-        ).sort_values("missing_pct", ascending=False)
-        st.dataframe(miss_df, use_container_width=True)
-
-        st.markdown("#### Missingness bar chart")
-        miss_nonzero = miss_df[miss_df["missing_count"] > 0]
-        if not miss_nonzero.empty:
-            fig = px.bar(
-                miss_nonzero.reset_index().rename(columns={"index": "column"}),
-                x="column",
-                y="missing_pct",
-                template=PLOTLY_TEMPLATE,
-                title="Percent missing by column",
-                height=350,
-            )
-            fig.update_layout(xaxis_tickangle=45)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No missing values in numeric columns.")
-
-        st.markdown("#### Missingness heatmap (rows × columns)")
-        miss_matrix = current_df[numc].isna().astype(int)
-        if not miss_matrix.empty:
-            fig_hm = px.imshow(
-                miss_matrix.transpose(),
-                aspect="auto",
-                color_continuous_scale="Viridis",
-                template=PLOTLY_TEMPLATE,
-                labels=dict(color="Missing"),
-                title="Missingness heatmap (1=missing)",
-            )
-            st.plotly_chart(fig_hm, use_container_width=True)
-    else:
-        st.info("No numeric columns, so missingness lab is trivial.")
-
-    # Imputation comparison
-    st.markdown("---")
-    st.markdown("### Imputation comparison for one column (MCAR experiment)")
-
-    if numc:
-        target_col = st.selectbox(
-            "Numeric column with missing values",
-            numc,
-            index=min(1, len(numc) - 1),
-        )
-        base = current_df[target_col]
-
-        df_mcar = current_df.copy()
-        rng = np.random.default_rng(7)
-        idx = df_mcar.index.to_numpy()
-        mask_extra = rng.choice(idx, size=int(0.1 * len(idx)), replace=False)
-        df_mcar.loc[mask_extra, target_col] = np.nan
-
-        results = []
-        for label, imp in [
-            ("Simple (median)", SimpleImputer(strategy="median")),
-            ("KNN (k=5)", KNNImputer(n_neighbors=5)),
-            ("Iterative (MICE)", IterativeImputer(random_state=7, max_iter=8)),
-        ]:
-            X = df_mcar[numc]
-            imputed = imp.fit_transform(X)
-            Ximp = pd.DataFrame(imputed, columns=numc, index=X.index)
-
-            common = base.dropna()
-            if target_col in Ximp.columns:
-                rmse = float(
-                    np.sqrt(
-                        np.nanmean(
-                            (Ximp.loc[common.index, target_col] - common) ** 2
-                        )
-                    )
-                )
-            else:
-                rmse = np.nan
-            results.append({"imputer": label, "RMSE_vs_original": rmse})
-
-        res_df = pd.DataFrame(results).sort_values("RMSE_vs_original")
-        st.dataframe(res_df, use_container_width=True)
-        fig_imp = px.bar(
-            res_df,
-            x="imputer",
-            y="RMSE_vs_original",
-            template=PLOTLY_TEMPLATE,
-            title=f"Imputation RMSE for {target_col}",
-        )
-        st.plotly_chart(fig_imp, use_container_width=True)
-
-# -------------------------------------------------------------------
-# ENCODING / MODEL HELPER
+# ENCODING / MODEL HELPERS
 # -------------------------------------------------------------------
 def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
     """
-    Returns:
-        dict with:
-            X_tr, X_te, y_train, y_test, preprocessor, tfidf, feature_cols,
-            train_struct, encoded_train_df, encoding_map_df, dfy
+    Returns a dict with:
+      X_tr, X_te, y_train, y_test, preprocessor, tfidf,
+      feature_cols, train_struct, encoded_train_df, encoding_map_df, dfy
     """
     dfy = df.dropna(subset=[target]).copy()
     if dfy.empty:
@@ -833,6 +474,7 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
     cat_features = [
         c for c in feature_cols if dfy[c].dtype == "category" or dfy[c].dtype == "object"
     ]
+
     text_feature = "usage_text" if "usage_text" in cat_features else None
     if text_feature and text_feature in cat_features:
         cat_features = [c for c in cat_features if c != text_feature]
@@ -851,7 +493,7 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
         stratify=stratify,
     )
 
-    # text – fit TF-IDF on TRAIN only
+    # text encoding
     if text_feature:
         tfidf = TfidfVectorizer(max_features=80)
         X_train_text = tfidf.fit_transform(
@@ -864,7 +506,7 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
         tfidf = None
         X_train_text = X_test_text = None
 
-    # numeric imputer
+    # numeric imputer choice
     if imputer_name.startswith("Simple"):
         num_imputer = SimpleImputer(strategy="median")
     elif imputer_name.startswith("KNN"):
@@ -873,10 +515,7 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
         num_imputer = IterativeImputer(random_state=7, max_iter=8)
 
     num_transformer = Pipeline(
-        steps=[
-            ("imputer", num_imputer),
-            ("scaler", StandardScaler()),
-        ]
+        steps=[("imputer", num_imputer), ("scaler", StandardScaler())]
     )
     cat_transformer = Pipeline(
         steps=[
@@ -951,6 +590,7 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
                     category_value="",
                 )
             )
+
     encoding_map_df = pd.DataFrame(mapping_rows)
 
     return dict(
@@ -967,6 +607,369 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
         dfy=dfy,
     )
 
+# -------------------------------------------------------------------
+# TABS
+# -------------------------------------------------------------------
+tabs = st.tabs(
+    [
+        "🏠 Summary",
+        "📦 Data Overview",
+        "📊 EDA & Dataset Comparison",
+        "🧩 Missingness Lab",
+        "🔁 Encoding Demo & Classical Models",
+        "🧠 Deep Learning & Ensembles",
+        "📈 SOH & RUL + Time-Series",
+        "🌍 Insights & Rubric",
+        "💾 Export",
+    ]
+)
+
+# -------------------------------------------------------------------
+# 1. SUMMARY
+# -------------------------------------------------------------------
+with tabs[0]:
+    explain(
+        "Summary dashboard",
+        [
+            "High-level KPIs for selected dataset(s).",
+            "SOH curves, energy throughput, health buckets, and overall missingness.",
+            "Shows that multiple data sources are integrated.",
+        ],
+    )
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        kpi("Data sources selected", len(selected_sources), ", ".join(selected_sources))
+    with c2:
+        kpi("Unique cells", int(current_df["cell_id"].nunique()), "cell_id")
+    with c3:
+        kpi("Rows (after cleaning + FE)", len(current_df))
+    with c4:
+        kpi("Avg % missing", f"{pct_missing(current_df):.1f}%", "across all columns")
+
+    st.markdown("### SOH & energy overview")
+    left, mid, right = st.columns([1.4, 1.1, 1.1])
+
+    with left:
+        df_plot = current_df.dropna(subset=["soh"]).copy()
+        if not df_plot.empty:
+            fig = px.line(
+                df_plot,
+                x="cycle",
+                y="soh",
+                color="cell_id",
+                facet_row="dataset",
+                template=PLOTLY_TEMPLATE,
+                height=350,
+                title="SOH vs cycle by cell / dataset",
+            )
+            fig.add_hline(
+                y=EOL_THRESH,
+                line_dash="dot",
+                line_color="red",
+                annotation_text="EOL",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No SOH labels available for selected datasets.")
+
+    with mid:
+        if "e_abs" in current_df.columns:
+            g = (
+                current_df.groupby(["dataset", "cell_id"], as_index=False)["e_abs"]
+                .sum()
+                .sort_values("e_abs", ascending=False)
+            )
+            fig2 = px.bar(
+                g,
+                x="cell_id",
+                y="e_abs",
+                color="dataset",
+                template=PLOTLY_TEMPLATE,
+                title="Total energy throughput per cell",
+                height=350,
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+        else:
+            st.info("Feature e_abs not available.")
+
+    with right:
+        if "bucket" in current_df.columns:
+            counts = (
+                current_df["bucket"]
+                .value_counts(dropna=False)
+                .rename_axis("bucket")
+                .reset_index(name="count")
+            )
+            fig3 = px.pie(
+                counts,
+                values="count",
+                names="bucket",
+                hole=0.5,
+                template=PLOTLY_TEMPLATE,
+                title="Health bucket distribution",
+                height=350,
+            )
+            st.plotly_chart(fig3, use_container_width=True)
+        else:
+            st.info("Bucket labels not found.")
+
+# -------------------------------------------------------------------
+# 2. DATA OVERVIEW
+# -------------------------------------------------------------------
+with tabs[1]:
+    explain(
+        "Data overview",
+        [
+            "View integrated dataset after cleaning and feature engineering.",
+            "Check data types, uniqueness, and missingness.",
+            "Also inspect cell metadata and environment profile sources.",
+        ],
+    )
+
+    st.markdown("### Combined dataset (after cleaning + feature engineering)")
+    st.dataframe(current_df.head(20), use_container_width=True)
+
+    st.markdown("#### Column info & summary statistics")
+    col1, col2 = st.columns([1.2, 1.4])
+
+    with col1:
+        dtype_df = pd.DataFrame(
+            {
+                "column": current_df.columns,
+                "dtype": [str(current_df[c].dtype) for c in current_df.columns],
+                "n_unique": [current_df[c].nunique(dropna=True) for c in current_df.columns],
+                "pct_missing": [100 * current_df[c].isna().mean() for c in current_df.columns],
+            }
+        )
+        st.dataframe(dtype_df, use_container_width=True)
+
+    with col2:
+        st.dataframe(
+            current_df.describe(include="all").transpose(),
+            use_container_width=True,
+        )
+
+    st.markdown("### Per-dataset summary")
+    per_ds = (
+        current_df.groupby("dataset")
+        .agg(
+            n_rows=("soh", "size"),
+            n_cells=("cell_id", "nunique"),
+            n_cycles=("cycle", "nunique"),
+            mean_soh=("soh", "mean"),
+            pct_missing=("soh", lambda s: 100 * s.isna().mean()),
+        )
+        .reset_index()
+    )
+    st.dataframe(per_ds, use_container_width=True)
+
+    fig_ds = px.bar(
+        per_ds,
+        x="dataset",
+        y="mean_soh",
+        template=PLOTLY_TEMPLATE,
+        title="Average SOH by dataset",
+    )
+    st.plotly_chart(fig_ds, use_container_width=True)
+
+    st.markdown("### Cell metadata (2nd data source)")
+    st.dataframe(cell_metadata.head(10), use_container_width=True)
+
+    st.markdown("### Environment profile (3rd data source)")
+    st.dataframe(env_profile, use_container_width=True)
+
+# -------------------------------------------------------------------
+# 3. EDA & DATASET COMPARISON
+# -------------------------------------------------------------------
+with tabs[2]:
+    explain(
+        "EDA & Dataset comparison",
+        [
+            "Histogram, boxplot, violin, scatter, and correlation heatmap.",
+            "Compare distributions across Urban / Highway / Mixed profiles.",
+        ],
+    )
+
+    numc = [c for c in numeric_cols(current_df) if c != "cycle"]
+
+    st.markdown("### Histograms by dataset")
+    if numc:
+        col_hist = st.selectbox(
+            "Histogram feature",
+            numc,
+            index=numc.index("soh") if "soh" in numc else 0,
+        )
+        fig = px.histogram(
+            current_df,
+            x=col_hist,
+            color="dataset",
+            nbins=30,
+            template=PLOTLY_TEMPLATE,
+            barmode="overlay",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("### Box & violin by dataset")
+    if numc:
+        col_box = st.selectbox(
+            "Feature for box/violin",
+            numc,
+            index=numc.index("stress_index") if "stress_index" in numc else 0,
+            key="box_feat",
+        )
+        fig_box = px.box(
+            current_df,
+            x="dataset",
+            y=col_box,
+            color="dataset",
+            template=PLOTLY_TEMPLATE,
+            title=f"Box plot of {col_box} by dataset",
+        )
+        st.plotly_chart(fig_box, use_container_width=True)
+
+        fig_violin = px.violin(
+            current_df,
+            x="dataset",
+            y=col_box,
+            color="dataset",
+            box=True,
+            points="all",
+            template=PLOTLY_TEMPLATE,
+            title=f"Violin plot of {col_box} by dataset",
+        )
+        st.plotly_chart(fig_violin, use_container_width=True)
+
+    st.markdown("### Correlation heatmap (numeric)")
+    corr_heatmap(current_df, "Correlation heatmap", key="eda_corr")
+
+    st.markdown("### Scatter plot")
+    if len(numc) >= 2:
+        c1, c2 = st.columns(2)
+        with c1:
+            x_axis = st.selectbox("X-axis", numc, index=0, key="scatter_x")
+        with c2:
+            y_axis = st.selectbox("Y-axis", numc, index=1, key="scatter_y")
+        color_by = st.selectbox(
+            "Color points by",
+            ["dataset", "cell_id", "bucket", "vehicle_segment"],
+            index=0,
+        )
+        fig_sc = px.scatter(
+            current_df,
+            x=x_axis,
+            y=y_axis,
+            color=color_by,
+            hover_data=["cycle", "cell_id"],
+            template=PLOTLY_TEMPLATE,
+            height=500,
+        )
+        st.plotly_chart(fig_sc, use_container_width=True)
+
+# -------------------------------------------------------------------
+# 4. MISSINGNESS LAB
+# -------------------------------------------------------------------
+with tabs[3]:
+    explain(
+        "Missingness Lab",
+        [
+            "Quantify missing values per column.",
+            "Visualise missingness matrix.",
+            "Compare Simple / KNN / Iterative (MICE) imputation RMSE.",
+        ],
+    )
+
+    numc = numeric_cols(current_df)
+    st.markdown("### Missing values summary")
+    if numc:
+        miss_cnt = current_df[numc].isna().sum()
+        miss_pct = current_df[numc].isna().mean() * 100
+        miss_df = pd.DataFrame(
+            {"missing_count": miss_cnt, "missing_pct": miss_pct}
+        ).sort_values("missing_pct", ascending=False)
+        st.dataframe(miss_df, use_container_width=True)
+
+        st.markdown("#### Missingness bar chart")
+        miss_nonzero = miss_df[miss_df["missing_count"] > 0]
+        if not miss_nonzero.empty:
+            fig = px.bar(
+                miss_nonzero.reset_index().rename(columns={"index": "column"}),
+                x="column",
+                y="missing_pct",
+                template=PLOTLY_TEMPLATE,
+                title="Percent missing by column",
+                height=350,
+            )
+            fig.update_layout(xaxis_tickangle=45)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No missing values in numeric columns.")
+
+        st.markdown("#### Missingness heatmap (rows × columns)")
+        miss_matrix = current_df[numc].isna().astype(int)
+        if not miss_matrix.empty:
+            fig_hm = px.imshow(
+                miss_matrix.transpose(),
+                aspect="auto",
+                color_continuous_scale="Viridis",
+                template=PLOTLY_TEMPLATE,
+                labels=dict(color="Missing"),
+                title="Missingness heatmap (1=missing)",
+            )
+            st.plotly_chart(fig_hm, use_container_width=True)
+    else:
+        st.info("No numeric columns to analyse missingness.")
+
+    st.markdown("---")
+    st.markdown("### Imputation comparison for one numeric column (MCAR)")
+
+    if numc:
+        target_col = st.selectbox(
+            "Numeric column",
+            numc,
+            index=min(1, len(numc) - 1),
+        )
+        base = current_df[target_col]
+
+        df_mcar = current_df.copy()
+        rng = np.random.default_rng(7)
+        idx = df_mcar.index.to_numpy()
+        mask_extra = rng.choice(idx, size=int(0.1 * len(idx)), replace=False)
+        df_mcar.loc[mask_extra, target_col] = np.nan
+
+        results = []
+        for label, imp in [
+            ("Simple (median)", SimpleImputer(strategy="median")),
+            ("KNN (k=5)", KNNImputer(n_neighbors=5)),
+            ("Iterative (MICE)", IterativeImputer(random_state=7, max_iter=8)),
+        ]:
+            X = df_mcar[numc]
+            imputed = imp.fit_transform(X)
+            Ximp = pd.DataFrame(imputed, columns=numc, index=X.index)
+
+            common = base.dropna()
+            if target_col in Ximp.columns:
+                rmse = float(
+                    np.sqrt(
+                        np.nanmean(
+                            (Ximp.loc[common.index, target_col] - common) ** 2
+                        )
+                    )
+                )
+            else:
+                rmse = np.nan
+            results.append({"imputer": label, "RMSE_vs_original": rmse})
+
+        res_df = pd.DataFrame(results).sort_values("RMSE_vs_original")
+        st.dataframe(res_df, use_container_width=True)
+        fig_imp = px.bar(
+            res_df,
+            x="imputer",
+            y="RMSE_vs_original",
+            template=PLOTLY_TEMPLATE,
+            title=f"Imputation RMSE for {target_col}",
+        )
+        st.plotly_chart(fig_imp, use_container_width=True)
 
 # -------------------------------------------------------------------
 # 5. ENCODING DEMO & CLASSICAL MODELS
@@ -975,11 +978,10 @@ with tabs[4]:
     explain(
         "Encoding Demo & Classical Models",
         [
-            "Show raw features BEFORE encoding.",
+            "Show data BEFORE encoding (raw columns).",
             "Show encoded design matrix AFTER encoding.",
             "Show encoding map (raw → encoded).",
-            "Train classical models (RandomForest, GradientBoosting).",
-            "Optional RandomizedSearchCV for RF (high-performance tuning).",
+            "Train classical models (RandomForest & GradientBoosting) on the encoded features.",
         ],
     )
 
@@ -1008,7 +1010,7 @@ with tabs[4]:
         with c3:
             kpi("Test rows", len(y_test))
 
-        st.markdown("### 🔤 BEFORE encoding (raw features)")
+        st.markdown("### BEFORE encoding (raw features)")
         show_cols = ["dataset", "cell_id", "cycle", target]
         extra = [
             c
@@ -1031,10 +1033,10 @@ with tabs[4]:
         show_cols = [c for c in show_cols if c in dfy.columns]
         st.dataframe(dfy[show_cols].head(10), use_container_width=True)
 
-        st.markdown("### 🔁 AFTER encoding (design matrix)")
+        st.markdown("### AFTER encoding (design matrix)")
         st.dataframe(encoded_train_df.head(10), use_container_width=True)
 
-        st.markdown("### 🧬 Encoding map (raw → encoded)")
+        st.markdown("### Encoding map (raw → encoded)")
         st.dataframe(encoding_map_df, use_container_width=True)
 
         st.markdown("---")
@@ -1042,23 +1044,24 @@ with tabs[4]:
 
         models = {}
         if target == "soh":
-            models["RandomForest"] = RandomForestRegressor(
+            models["RandomForestRegressor"] = RandomForestRegressor(
                 n_estimators=250, random_state=7, n_jobs=-1
             )
-            models["GradientBoosting"] = GradientBoostingRegressor(random_state=7)
+            models["GradientBoostingRegressor"] = GradientBoostingRegressor(
+                random_state=7
+            )
         else:
-            models["RandomForest"] = RandomForestClassifier(
+            models["RandomForestClassifier"] = RandomForestClassifier(
                 n_estimators=250, random_state=7, n_jobs=-1
             )
-            models["GradientBoosting"] = GradientBoostingClassifier(random_state=7)
+            models["GradientBoostingClassifier"] = GradientBoostingClassifier(
+                random_state=7
+            )
 
         rows = []
-        fitted_models = {}
         for name, model in models.items():
             model.fit(X_tr, y_train)
             y_pred = model.predict(X_te)
-            fitted_models[name] = model
-
             if target == "soh":
                 mae = mean_absolute_error(y_test, y_pred)
                 r2 = r2_score(y_test, y_pred)
@@ -1090,10 +1093,10 @@ with tabs[4]:
             )
             st.plotly_chart(fig_m, use_container_width=True)
 
-        # Optional hyperparameter tuning (HPC)
-        st.markdown("### ⚙️ Optional: RandomizedSearchCV for RandomForest (HPC)")
+        st.markdown("### RF hyperparameter tuning (RandomizedSearchCV, HPC)")
+
         if tune_rf:
-            st.info("Running RandomizedSearchCV with n_jobs=-1 (parallel search)...")
+            st.info("Running RandomizedSearchCV for RandomForest (n_jobs=-1)...")
             if target == "soh":
                 rf_base = RandomForestRegressor(random_state=7)
                 param_dist = {
@@ -1135,17 +1138,24 @@ with tabs[4]:
                 st.write(f"Best RF Accuracy: {acc_best:.3f}")
 
 # -------------------------------------------------------------------
-# 6. DEEP LEARNING & ENSEMBLES
+# 6. DEEP LEARNING & ENSEMBLES (ALWAYS ON)
 # -------------------------------------------------------------------
 with tabs[5]:
     explain(
         "Deep Learning & Ensembles",
         [
-            "Uses the SAME encoded features as classical models.",
-            "Deep learning = Multi-Layer Perceptron (3 hidden layers).",
-            "Ensemble model = XGBoost (if installed).",
-            "This directly addresses the 'Advanced Modelling Techniques' rubric item.",
+            "Uses the same encoded features as the classical models.",
+            "Deep learning = Multi-Layer Perceptron (MLP) neural network with 3 hidden layers.",
+            "Ensemble = XGBoost (gradient-boosted trees) when available.",
         ],
+    )
+
+    st.markdown(
+        """
+        **Note:** `MLPRegressor` / `MLPClassifier` in scikit-learn is a feedforward
+        **multi-layer neural network**. Here we use 3 hidden layers (128 → 64 → 32),
+        so this is a small **deep learning** model for tabular data.
+        """
     )
 
     target = "soh" if task_type == "SOH regression" else "bucket"
@@ -1153,7 +1163,8 @@ with tabs[5]:
 
     if enc_adv is None or enc_adv["dfy"].shape[0] < MIN_LABELS_TRAIN:
         st.info(
-            f"Not enough labelled rows for target '{target}'. Need at least {MIN_LABELS_TRAIN}."
+            f"Not enough labelled rows for target '{target}' to train advanced models. "
+            f"Need at least {MIN_LABELS_TRAIN}."
         )
     else:
         X_tr = enc_adv["X_tr"]
@@ -1161,24 +1172,28 @@ with tabs[5]:
         y_train = enc_adv["y_train"]
         y_test = enc_adv["y_test"]
 
-        st.write(
-            "👉 **Deep learning note:** `MLPRegressor` / `MLPClassifier` is a feedforward "
-            "neural network with multiple hidden layers (here: 3 layers), which qualifies as a "
-            "small deep learning model for tabular data."
-        )
-
         advanced_models = {}
+        # ------- Deep learning: MLP neural network (3 hidden layers) -------
         if target == "soh":
-            if use_mlp:
-                advanced_models["MLPRegressor (3-layer NN)"] = MLPRegressor(
-                    hidden_layer_sizes=(128, 64, 32),
-                    activation="relu",
-                    max_iter=400,
-                    alpha=1e-3,
-                    random_state=7,
-                )
-            if use_xgb and XGB_OK:
-                # FIXED: use XGBRegressor instead of non-existent XGBoostRegressor
+            advanced_models["MLPRegressor (3-layer NN)"] = MLPRegressor(
+                hidden_layer_sizes=(128, 64, 32),
+                activation="relu",
+                max_iter=400,
+                alpha=1e-3,
+                random_state=7,
+            )
+        else:
+            advanced_models["MLPClassifier (3-layer NN)"] = MLPClassifier(
+                hidden_layer_sizes=(128, 64, 32),
+                activation="relu",
+                max_iter=400,
+                alpha=1e-3,
+                random_state=7,
+            )
+
+        # ------- Ensemble: XGBoost -------
+        if XGB_OK:
+            if target == "soh":
                 advanced_models["XGBRegressor (XGBoost)"] = xgb.XGBRegressor(
                     n_estimators=300,
                     learning_rate=0.05,
@@ -1188,17 +1203,7 @@ with tabs[5]:
                     random_state=7,
                     n_jobs=-1,
                 )
-        else:
-            if use_mlp:
-                advanced_models["MLPClassifier (3-layer NN)"] = MLPClassifier(
-                    hidden_layer_sizes=(128, 64, 32),
-                    activation="relu",
-                    max_iter=400,
-                    alpha=1e-3,
-                    random_state=7,
-                )
-            if use_xgb and XGB_OK:
-                # FIXED: use XGBClassifier instead of non-existent XGBoostClassifier
+            else:
                 advanced_models["XGBClassifier (XGBoost)"] = xgb.XGBClassifier(
                     n_estimators=300,
                     learning_rate=0.05,
@@ -1209,12 +1214,15 @@ with tabs[5]:
                     n_jobs=-1,
                     eval_metric="logloss",
                 )
-
-        if not advanced_models:
-            st.info("Enable MLP and/or XGBoost in the sidebar to see advanced models.")
         else:
-            rows = []
-            for name, model in advanced_models.items():
+            st.warning(
+                "xgboost library is not installed, so the XGBoost ensemble model is skipped. "
+                "Add `xgboost` to requirements.txt to enable it."
+            )
+
+        rows = []
+        for name, model in advanced_models.items():
+            try:
                 model.fit(X_tr, y_train)
                 y_pred = model.predict(X_te)
                 if target == "soh":
@@ -1224,9 +1232,15 @@ with tabs[5]:
                 else:
                     acc = accuracy_score(y_test, y_pred)
                     rows.append({"model": name, "Accuracy": acc})
+            except Exception as e:
+                st.warning(f"Model {name} failed to train: {e}")
 
+        if not rows:
+            st.warning("No advanced models were successfully trained. See warnings above.")
+        else:
             res_adv = pd.DataFrame(rows)
             st.session_state["last_results"]["advanced"] = res_adv.to_dict()
+            st.markdown("### Advanced model results (Deep NN + XGBoost)")
             st.dataframe(res_adv, use_container_width=True)
 
             if target == "soh":
@@ -1236,7 +1250,7 @@ with tabs[5]:
                     y="MAE",
                     color="R2",
                     template=PLOTLY_TEMPLATE,
-                    title="SOH regression (deep learning & ensembles)",
+                    title="SOH regression – deep learning & ensembles",
                 )
                 st.plotly_chart(fig_adv, use_container_width=True)
             else:
@@ -1245,7 +1259,7 @@ with tabs[5]:
                     x="model",
                     y="Accuracy",
                     template=PLOTLY_TEMPLATE,
-                    title="Bucket classification (deep learning & ensembles)",
+                    title="Bucket classification – deep learning & ensembles",
                 )
                 st.plotly_chart(fig_adv, use_container_width=True)
 
@@ -1256,9 +1270,9 @@ with tabs[6]:
     explain(
         "SOH & RUL + Time-Series",
         [
-            "Use a RandomForest on encoded features to estimate SOH trends vs cycle.",
-            "Convert SOH trend into a simple Remaining Useful Life estimate (RUL).",
-            "Optionally fit AutoReg to the SOH time-series (if statsmodels is installed).",
+            "Train a RandomForest on encoded features to estimate SOH.",
+            "Convert SOH trend into a simple Remaining Useful Life estimate (RUL in cycles).",
+            "Optionally, AutoReg time-series forecast of SOH vs cycle (if statsmodels is installed).",
         ],
     )
 
@@ -1286,11 +1300,10 @@ with tabs[6]:
             mae_r = mean_absolute_error(y_test_r, y_pred_r)
             r2_r = r2_score(y_test_r, y_pred_r)
 
-            kpi("SOH RF MAE", mae_r, "RUL model baseline")
-            kpi("SOH RF R²", r2_r, "RUL model baseline")
+            kpi("SOH RF MAE", mae_r, "baseline error for RUL")
+            kpi("SOH RF R²", r2_r, "explained variance")
 
             st.markdown("### Simple RUL estimate (Remaining Useful Life in cycles)")
-
             rul_rows = []
             for cell, gcell in dfy_r.groupby("cell_id"):
                 gcell = gcell.sort_values("cycle")
@@ -1336,7 +1349,7 @@ with tabs[6]:
 
         if not STATS_OK:
             st.info(
-                "statsmodels is not installed, so the AutoReg forecast demo is disabled. "
+                "statsmodels is not installed, so the AutoReg time-series forecast demo is disabled. "
                 "Add `statsmodels` to requirements.txt to enable it."
             )
         else:
@@ -1351,7 +1364,7 @@ with tabs[6]:
                 cycles = g["cycle"].values
 
                 if len(series) < 20:
-                    st.info("Need at least 20 points to fit an AutoReg model.")
+                    st.info("Need at least 20 cycles to fit an AutoReg model.")
                 else:
                     N = min(80, len(series))
                     s_train = series[-N:]
@@ -1391,51 +1404,79 @@ with tabs[7]:
     explain(
         "Insights & Rubric mapping",
         [
-            "Narrative + real-world recommendations for EV fleets.",
-            "Rubric compliance table showing which requirement is satisfied where.",
+            "Real-world insights for EV battery monitoring.",
+            "Rubric coverage table for base + advanced requirements.",
         ],
     )
 
     st.markdown("### Real-world insights")
     st.write(
         """
-        - **Temperature control**: High `temp_max` and large `temp_spread` are associated with faster
-          SOH decay and more missing SOH measurements. Fleet operators should monitor thermal events
-          and reduce exposure to very high pack temperatures.
-        - **Usage-dependent maintenance**: Urban profiles degrade faster than highway profiles, suggesting
-          different maintenance intervals or warranty windows by usage class.
-        - **Missing data strategy**: Comparing Simple, KNN, and Iterative imputation shows that more 
-          sophisticated methods can reduce bias when data are MAR (Missing At Random).
-        - **Model choice & uncertainty**: Tree-based ensembles (RandomForest / GradientBoosting / XGBoost)
-          provide strong baselines. MLP neural networks add nonlinearity at the cost of interpretability.
-          Using multiple models and comparing their errors gives a sense of uncertainty.
+        - **Thermal management matters**: high `temp_max` and large `temp_spread`
+          correlate with faster SOH decay. EV fleet managers should monitor
+          thermal events and redesign cooling where stress_index is high.
+        - **Usage profiles differ**: Urban cycles degrade faster than Highway cycles,
+          suggesting different maintenance / warranty strategies by usage profile.
+        - **Missing data strategy**: naive imputation can bias capacity estimates
+          under MAR missingness; our comparison of Simple/KNN/MICE helps justify
+          a richer imputation strategy in production.
+        - **Model diversity**: Having classical models (RF, GB), deep neural networks (MLP),
+          and gradient-boosted trees (XGBoost) gives complementary views and robustness
+          to model mis-specification.
         """
     )
 
     st.markdown("### Rubric compliance summary")
     rubric_items = [
-        ("Data Collection & Prep",
-         "3 synthetic per-cycle sources (Urban/Highway/Mixed) + cell metadata + env profile; cleaning + integration."),
-        ("EDA & Visualizations",
-         "Histograms, boxplots, violin, correlation heatmaps, scatter, line, pie."),
-        ("Data Processing & Feature Engineering",
-         "Multiple imputers (Simple/KNN/MICE), scaling, engineered features (temp_spread, stress_index, normalized features)."),
-        ("Model Development & Evaluation",
-         "Classical (RF, GB) + deep learning (MLP NN) + ensemble (XGBoost), metrics tables, RF tuning with CV."),
-        ("Streamlit App",
-         "Multi-tab app, dataset/model selectors, expander documentation, caching, session_state, several interactive widgets."),
-        ("GitHub",
-         "Export CSV here; README + data dictionary + app link to be added in repo."),
-        ("Advanced Modelling",
-         "MLP (3-layer neural net), XGBoost ensemble, RF RandomizedSearchCV."),
-        ("Specialized DS",
-         "Time-series AutoReg forecast + text TF-IDF (usage_text)."),
-        ("High-Performance Computing",
-         "RandomizedSearchCV with n_jobs=-1, tree ensembles with n_jobs=-1."),
-        ("Real-world Impact",
-         "Insights & Story section with concrete EV fleet recommendations."),
-        ("Exceptional Visualization",
-         "Multiple publication-style plots and comparison dashboards."),
+        (
+            "Data Collection & Preparation",
+            "3 synthetic per-cycle data sources (Urban / Highway / Mixed) + cell_metadata + env_profile; "
+            "advanced cleaning & integration; typed columns & categories.",
+        ),
+        (
+            "EDA & Visualisations",
+            "Histograms, boxplots, violin plots, scatter, correlation heatmaps, line & pie charts.",
+        ),
+        (
+            "Data Processing & Feature Engineering",
+            "Multiple imputers (Simple, KNN, Iterative MICE), scaling, engineered features "
+            "(temp_spread, stress_index, q_norm, e_norm, cycle_bin).",
+        ),
+        (
+            "Model Development & Evaluation",
+            "Classical models (RF & GB) for regression and classification; train/test split; metrics "
+            "(MAE, R², Accuracy); optional RF RandomizedSearchCV.",
+        ),
+        (
+            "Streamlit App",
+            "Multi-tab app, dataset selector, target/task selector, imputation choice, interactive plots, "
+            "expander documentation, caching for synthetic data.",
+        ),
+        (
+            "GitHub & Documentation",
+            "Export CSV in app; you will add README, data dictionary, and Streamlit URL in the repo.",
+        ),
+        (
+            "Advanced Modelling Techniques",
+            "MLPRegressor/MLPClassifier as deep neural networks (3 hidden layers), XGBoost ensembles, "
+            "hyperparameter tuning via RandomizedSearchCV.",
+        ),
+        (
+            "Specialized Data Science",
+            "Time-series AutoReg forecast of SOH vs cycle; text feature `usage_text` encoded via TF-IDF.",
+        ),
+        (
+            "High-Performance Computing",
+            "RandomizedSearchCV and RandomForest with n_jobs=-1, exploiting parallel CPUs.",
+        ),
+        (
+            "Real-world Application & Impact",
+            "Insights tab outlines how EV fleet operators can use these results for maintenance & design.",
+        ),
+        (
+            "Exceptional Presentation & Visualisation",
+            "Dark theme dashboard, multiple interactive Plotly figures, structured story across tabs.",
+        ),
     ]
     rubric_df = pd.DataFrame(rubric_items, columns=["Rubric item", "How this app addresses it"])
     st.dataframe(rubric_df, use_container_width=True)
@@ -1447,8 +1488,8 @@ with tabs[8]:
     explain(
         "Export",
         [
-            "Download cleaned per-cycle dataset (with engineered features) for further analysis.",
-            "This CSV is what you would commit to GitHub as the main data artifact.",
+            "Download cleaned per-cycle dataset (with engineered features).",
+            "This CSV is the main artifact to keep in your GitHub repo.",
         ],
     )
 
