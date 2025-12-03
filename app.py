@@ -39,17 +39,16 @@ from joblib import Parallel, delayed
 # optional libs
 try:
     from statsmodels.tsa.ar_model import AutoReg
-
     STATS_OK = True
 except Exception:
     STATS_OK = False
 
 try:
     import xgboost as xgb
-
     XGB_OK = True
 except Exception:
     XGB_OK = False
+
 
 # ------------------------------------------------------------------
 # CONFIG & STYLING
@@ -498,7 +497,7 @@ with tabs[2]:
         n = min(len(num_cols), 4)
         top_num = num_cols[:n]
 
-        # dynamic grid to avoid subplot_titles error
+        # dynamic grid to avoid subplot_titles mismatch
         if n == 1:
             rows, cols = 1, 1
         elif n == 2:
