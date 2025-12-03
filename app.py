@@ -1,13 +1,5 @@
 # app.py
 # Robust EV Battery SOH & RUL Dashboard
-# ------------------------------------
-# Streamlit app for:
-# - multi-dataset EV battery analytics
-# - IDA + EDA
-# - missingness & imputation
-# - encoding demonstration (before/after)
-# - SOH regression & simple RUL estimation
-# - time-series forecasting (optional)
 
 from __future__ import annotations
 
@@ -20,8 +12,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
-from sklearn.model_selection import GroupKFold
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, GroupKFold
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
@@ -38,14 +29,14 @@ from sklearn.ensemble import (
     RandomForestRegressor,
     RandomForestClassifier,
     GradientBoostingRegressor,
-    GradientBoostingClassifier,   # ✅ added
+    GradientBoostingClassifier,
 )
-from sklearn.neural_network import MLPRegressor
+from sklearn.neural_network import MLPRegressor, MLPClassifier
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 from joblib import Parallel, delayed
 
-# Optional libraries
+# optional libs
 try:
     from statsmodels.tsa.ar_model import AutoReg
 
@@ -60,16 +51,15 @@ try:
 except Exception:
     XGB_OK = False
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # CONFIG & STYLING
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 st.set_page_config(
     page_title="Robust EV Battery SOH & RUL",
     page_icon="🔋",
     layout="wide",
 )
 
-# Dark dashboard style
 DARK_CSS = """
 <style>
 [data-testid="stAppViewContainer"] {
@@ -114,7 +104,7 @@ h1, h2, h3, h4, h5, h6 {
 st.markdown(DARK_CSS, unsafe_allow_html=True)
 
 PLOTLY_TEMPLATE = "plotly_dark"
-EOL_THRESH = 0.80  # EOL when SOH < 80%
+EOL_THRESH = 0.80
 MIN_LABELS_TRAIN = 40
 
 
@@ -141,15 +131,11 @@ def explain(title: str, bullets):
             st.write(f"- {b}")
 
 
-# ---------------------------------------------------------------------
-# SYNTHETIC EV BATTERY DATA (3 DATASETS WITH MISSINGNESS)
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
+# SYNTHETIC EV DATA (3 DATASETS WITH MISSINGNESS)
+# ------------------------------------------------------------------
 @st.cache_data
 def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) -> pd.DataFrame:
-    """
-    Generate a small synthetic EV battery dataset with realistic-ish trends
-    and explicit missingness patterns (MCAR + MAR).
-    """
     rng = np.random.default_rng(seed)
     rows = []
 
@@ -180,11 +166,10 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
 
     for cell_idx in range(n_cells):
         cell_id = f"{profile[:3].upper()}_{cell_idx+1:02d}"
-        cap0 = rng.normal(2.6, 0.04)  # nominal capacity
+        cap0 = rng.normal(2.6, 0.04)
 
         for cyc in range(n_cycles):
             deg = p["deg_rate"]
-            # mean SOH trend
             soh_mean = 1.0 - deg * cyc + rng.normal(0, 0.002)
             soh = float(np.clip(soh_mean, 0.6, 1.03))
             cap = cap0 * soh
@@ -227,7 +212,6 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
 
     df = pd.DataFrame(rows)
 
-    # health bucket (for classification)
     def bucket(soh):
         if pd.isna(soh):
             return "Missing"
@@ -241,20 +225,19 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
 
     df["bucket"] = df["soh"].apply(bucket)
 
-    # Inject missingness:
-    # - MCAR: random missing q_abs and v_std
-    # - MAR: temp-driven missingness for soh + cap_ah
+    # MCAR missingness
     m_mcar_q = rng.random(len(df)) < 0.06
     df.loc[m_mcar_q, "q_abs"] = np.nan
 
     m_mcar_v = rng.random(len(df)) < 0.04
     df.loc[m_mcar_v, "v_std"] = np.nan
 
+    # MAR: hotter cycles have missing SOH and capacity
     high_temp = df["temp_max"] > (p["temp0"] + 12)
     mar_mask = high_temp & (rng.random(len(df)) < 0.35)
     df.loc[mar_mask, ["soh", "cap_ah"]] = np.nan
 
-    # Add a few duplicate rows to demonstrate cleaning
+    # duplicates to show cleaning
     dup_rows = df.sample(40, random_state=seed)
     df = pd.concat([df, dup_rows], ignore_index=True)
 
@@ -275,7 +258,6 @@ def clean_data(df: pd.DataFrame):
     d = d.drop_duplicates()
     n_after = len(d)
 
-    # Basic sanity clipping
     if "temp_mean" in d.columns:
         d["temp_mean"] = d["temp_mean"].clip(-20, 90)
     if "temp_max" in d.columns:
@@ -317,9 +299,9 @@ def pct_missing(df: pd.DataFrame) -> float:
     return 100.0 * df.isna().mean().mean()
 
 
-# ---------------------------------------------------------------------
-# SIDEBAR CONTROLS
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
+# SIDEBAR
+# ------------------------------------------------------------------
 all_datasets = get_all_datasets()
 st.sidebar.title("Controls")
 
@@ -328,27 +310,27 @@ selected_sources = st.sidebar.multiselect(
     "Select dataset(s)",
     ds_names,
     default=ds_names,
-    help="You can analyse one source, multiple sources, or all combined.",
+    help="Analyse one source, multiple sources, or all combined.",
 )
 if not selected_sources:
     selected_sources = ds_names
 
 impute_choice = st.sidebar.selectbox(
-    "Imputation method (for modelling)",
+    "Imputation method (modelling)",
     ["Simple (median)", "KNN (k=5)", "Iterative (MICE)"],
 )
 task_type = st.sidebar.radio("Modelling task", ["SOH regression", "Bucket classification"])
 
-use_mlp = st.sidebar.checkbox("Include MLP (neural network) model", value=True)
+use_mlp = st.sidebar.checkbox("Include MLP (neural network)", value=True)
 use_xgb = st.sidebar.checkbox("Include XGBoost model (if installed)", value=XGB_OK)
 
 st.sidebar.markdown("---")
 EOL_THRESH = st.sidebar.slider("EOL threshold (SOH)", 0.6, 0.95, 0.8, 0.01)
-MIN_LABELS_TRAIN = st.sidebar.slider("Min labeled rows to train", 20, 200, 40, 5)
+MIN_LABELS_TRAIN = st.sidebar.slider("Min labelled rows to train", 20, 200, 40, 5)
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # BUILD COMBINED DATASET
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 cleaned_sources = {}
 raw_sources = {}
 for name in ds_names:
@@ -359,12 +341,11 @@ for name in ds_names:
 
 combined_raw = pd.concat([raw_sources[n] for n in selected_sources], ignore_index=True)
 combined_clean, n_before_combined, n_after_combined = clean_data(combined_raw)
-
 current_df = combined_clean.copy()
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # TABS
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 tabs = st.tabs(
     [
         "🏠 Summary",
@@ -378,15 +359,15 @@ tabs = st.tabs(
     ]
 )
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # 1. SUMMARY
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 with tabs[0]:
     explain(
         "Summary dashboard",
         [
             "High‑level KPIs for the selected dataset(s).",
-            "Quick view of SOH trends, energy throughput, bucket distribution, and missingness.",
+            "SOH curves, energy throughput, bucket distribution, and missingness.",
         ],
     )
 
@@ -396,7 +377,7 @@ with tabs[0]:
     with c2:
         kpi("Unique cells", int(current_df["cell_id"].nunique()), "cell_id")
     with c3:
-        kpi("Rows (after cleaning)", len(current_df), f"from {n_before_combined} raw rows")
+        kpi("Rows (after cleaning)", len(current_df), f"from {n_before_combined} raw")
     with c4:
         kpi("Avg % missing", f"{pct_missing(current_df):.1f}%", "across all columns")
 
@@ -442,7 +423,7 @@ with tabs[0]:
             )
             st.plotly_chart(fig2, use_container_width=True)
         else:
-            st.info("Energy feature e_abs not available.")
+            st.info("Feature e_abs not available.")
 
     with right:
         if "bucket" in current_df.columns:
@@ -465,16 +446,15 @@ with tabs[0]:
         else:
             st.info("Bucket labels not found.")
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # 2. DATA OVERVIEW
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 with tabs[1]:
     explain(
         "Data overview",
         [
-            "Show raw schema after cleaning.",
-            "Demonstrate data types, ranges, and where missing values occur.",
-            "Make it clear that multiple data sources are integrated.",
+            "View the combined dataset after cleaning.",
+            "Look at data types, value ranges and missingness per column.",
         ],
     )
 
@@ -500,30 +480,41 @@ with tabs[1]:
             current_df.describe(include="all").transpose(), use_container_width=True
         )
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # 3. EDA GALLERY
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 with tabs[2]:
     explain(
         "EDA gallery",
         [
-            "Multiple visualizations inspired by the penguins example: distributions, boxplots, correlations, scatter.",
-            "Helps you understand distributions and relationships before modelling.",
+            "Multiple visualisations: histograms, boxplots, correlations, scatter.",
+            "Mirrors the rich penguins EDA but for EV battery data.",
         ],
     )
 
-    # Distribution plots (hist + KDE)
     st.markdown("### Distributions of key numeric features")
     num_cols = [c for c in numeric_cols(current_df) if c not in ["cycle"]]
-    top_num = num_cols[:4]
+    if num_cols:
+        n = min(len(num_cols), 4)
+        top_num = num_cols[:n]
 
-    if top_num:
-        fig = make_subplots(
-            rows=2,
-            cols=2,
-            subplot_titles=top_num,
-        )
-        positions = [(1, 1), (1, 2), (2, 1), (2, 2)]
+        # dynamic grid to avoid subplot_titles error
+        if n == 1:
+            rows, cols = 1, 1
+        elif n == 2:
+            rows, cols = 1, 2
+        else:  # 3 or 4
+            rows, cols = 2, 2
+
+        total_slots = rows * cols
+        titles = top_num + [""] * (total_slots - len(top_num))
+
+        fig = make_subplots(rows=rows, cols=cols, subplot_titles=titles)
+        positions = []
+        for r in range(rows):
+            for c in range(cols):
+                positions.append((r + 1, c + 1))
+
         for i, col in enumerate(top_num):
             row, col_pos = positions[i]
             fig.add_trace(
@@ -544,9 +535,7 @@ with tabs[2]:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    # Box plots for outliers
-    st.markdown("### Box plots for outlier inspection")
-    if top_num:
+        st.markdown("### Box plots for outlier inspection")
         fig2 = make_subplots(
             rows=1, cols=len(top_num), subplot_titles=top_num, shared_y=True
         )
@@ -568,11 +557,9 @@ with tabs[2]:
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-    # Correlation heatmap
     st.markdown("### Correlation matrix")
     corr_heatmap(current_df, "Correlation heatmap (numeric features)", key="eda_corr")
 
-    # Scatter plots
     st.markdown("### Scatter plots")
     scatter_cols = [c for c in numeric_cols(current_df) if c not in ["cycle"]]
     if len(scatter_cols) >= 2:
@@ -598,16 +585,16 @@ with tabs[2]:
         )
         st.plotly_chart(fig_sc, use_container_width=True)
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # 4. MISSINGNESS & IMPUTATION
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 with tabs[3]:
     explain(
         "Missingness & Imputation",
         [
-            "Quantify missing data per column.",
-            "Visualize missingness pattern.",
-            "Compare imputation strategies (Simple, KNN, Iterative).",
+            "Quantify and visualise missing data.",
+            "Compare Simple / KNN / Iterative imputation RMSE.",
+            "Connects directly to MCAR/MAR ideas from lecture.",
         ],
     )
 
@@ -616,10 +603,7 @@ with tabs[3]:
     miss_cnt = current_df[numc].isna().sum()
     miss_pct = current_df[numc].isna().mean() * 100
     miss_df = pd.DataFrame(
-        {
-            "missing_count": miss_cnt,
-            "missing_pct": miss_pct,
-        }
+        {"missing_count": miss_cnt, "missing_pct": miss_pct}
     ).sort_values("missing_pct", ascending=False)
     st.dataframe(miss_df, use_container_width=True)
 
@@ -652,9 +636,9 @@ with tabs[3]:
         )
         st.plotly_chart(fig_hm, use_container_width=True)
 
-    # Imputation comparison demo for one column
+    # imputation comparison
     st.markdown("---")
-    st.markdown("### Imputation comparison for a single column")
+    st.markdown("### Imputation comparison for one column")
 
     if numc:
         target_col = st.selectbox(
@@ -664,7 +648,6 @@ with tabs[3]:
         )
         base = current_df[target_col]
 
-        # create a copy and inject extra artificial missingness (MCAR)
         df_mcar = current_df.copy()
         rng = np.random.default_rng(7)
         idx = df_mcar.index.to_numpy()
@@ -681,7 +664,6 @@ with tabs[3]:
             imputed = imp.fit_transform(X)
             Ximp = pd.DataFrame(imputed, columns=numc, index=X.index)
 
-            # Only compare where original was not NA
             common = base.dropna()
             if target_col in Ximp.columns:
                 rmse = float(
@@ -707,15 +689,10 @@ with tabs[3]:
         st.plotly_chart(fig_imp, use_container_width=True)
 
 
-# ---------------------------------------------------------------------
-# Helper for encoding & modelling
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
+# ENCODING HELPERS
+# ------------------------------------------------------------------
 def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
-    """
-    Returns:
-        X_tr, X_te, y_train, y_test, preprocessor, tfidf, feature_cols,
-        train_struct (raw), encoded_train_df (after encoding), encoding_map_df
-    """
     dfy = df.dropna(subset=[target]).copy()
     if dfy.empty:
         return None
@@ -738,7 +715,6 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
     if target == "bucket":
         y = y.astype(str)
 
-    # Split by cell_id to reduce leakage
     cells = dfy["cell_id"].astype(str).values
     uniq = np.unique(cells)
     rng = np.random.default_rng(7)
@@ -752,7 +728,7 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
     y_train = y.iloc[train_mask].copy()
     y_test = y.iloc[~train_mask].copy()
 
-    # text → TF-IDF
+    # text
     if text_feature:
         tfidf = TfidfVectorizer(max_features=80)
         X_text_all = tfidf.fit_transform(X_struct[text_feature].fillna("").astype(str))
@@ -762,7 +738,6 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
         tfidf = None
         X_train_text = X_test_text = None
 
-    # choose numeric imputer
     if imputer_name.startswith("Simple"):
         num_imputer = SimpleImputer(strategy="median")
     elif imputer_name.startswith("KNN"):
@@ -791,7 +766,6 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
 
     preprocessor = ColumnTransformer(transformers=transformers)
 
-    # FIT on train only
     X_train_struct_enc = preprocessor.fit_transform(X_train_struct)
     X_test_struct_enc = preprocessor.transform(X_test_struct)
 
@@ -800,7 +774,6 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
     except Exception:
         enc_feature_names = [f"f_{i}" for i in range(X_train_struct_enc.shape[1])]
 
-    # combine with text
     if X_train_text is not None:
         X_tr = np.hstack([X_train_struct_enc, X_train_text.toarray()])
         X_te = np.hstack([X_test_struct_enc, X_test_text.toarray()])
@@ -816,7 +789,6 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
         X_tr, columns=feature_names_full, index=X_train_struct.index
     )
 
-    # Build encoding map
     mapping_rows = []
     for name in enc_feature_names:
         if name.startswith("num__"):
@@ -869,16 +841,17 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
     )
 
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # 5. ENCODING & MODELS
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 with tabs[4]:
     explain(
         "Encoding & Models",
         [
-            "Shows data BEFORE encoding (raw numeric + categorical).",
-            "Shows data AFTER encoding (all‑numeric design matrix).",
-            "Explains how encoding works, then trains multiple models for SOH or bucket.",
+            "Table BEFORE encoding (raw).",
+            "Design matrix AFTER encoding (all numeric).",
+            "Encoding map (raw column → encoded column).",
+            "Then model comparison and simple RUL estimate.",
         ],
     )
 
@@ -887,7 +860,7 @@ with tabs[4]:
 
     if enc is None or enc["dfy"].shape[0] < MIN_LABELS_TRAIN:
         st.info(
-            f"Not enough labeled rows for target '{target}'. Need at least {MIN_LABELS_TRAIN}."
+            f"Not enough labelled rows for target '{target}'. Need at least {MIN_LABELS_TRAIN}."
         )
     else:
         dfy = enc["dfy"]
@@ -907,32 +880,40 @@ with tabs[4]:
         with c3:
             kpi("Test rows", len(y_test))
 
-        # BEFORE encoding
         st.markdown("### 🔤 Before encoding (raw features)")
         show_cols = ["dataset", "cell_id", "cycle", target]
-        extra = [c for c in ["q_abs", "e_abs", "temp_mean", "temp_max", "bucket"] if c in dfy.columns]
+        extra = [
+            c
+            for c in [
+                "q_abs",
+                "e_abs",
+                "temp_mean",
+                "temp_max",
+                "v_mean",
+                "v_std",
+                "bucket",
+            ]
+            if c in dfy.columns
+        ]
         show_cols += extra
         show_cols = [c for c in show_cols if c in dfy.columns]
         st.dataframe(train_struct[show_cols].head(10), use_container_width=True)
         st.caption(
-            "Above: features in their original form. Numeric columns are in physical units; "
-            "categorical columns are strings or categories; text lives in `usage_text`."
+            "Above: original features, including numeric (q_abs, e_abs, temperatures, voltages), "
+            "categorical (dataset, cell_id, bucket) and text (usage_text, not shown here)."
         )
 
-        # AFTER encoding
         st.markdown("### 🔁 After encoding (design matrix)")
         st.dataframe(encoded_train_df.head(10), use_container_width=True)
         st.caption(
-            "After encoding: numeric features have been imputed + standardized, "
-            "categorical features expanded into one‑hot 0/1 columns. "
-            "If a text column exists, its TF‑IDF features are appended as `text_*` columns."
+            "After encoding: numeric → imputed + standardised, categorical → one‑hot 0/1, "
+            "text (usage_text) → TF‑IDF `text_*` features."
         )
 
-        # Encoding map
         st.markdown("### 🧬 Encoding map (raw → encoded)")
         st.dataframe(encoding_map_df, use_container_width=True)
 
-        # --- modelling ---
+        # ---- modelling ----
         st.markdown("---")
         st.subheader(f"Model comparison for target: **{target}**")
 
@@ -972,7 +953,7 @@ with tabs[4]:
             )
             models["GradientBoosting"] = GradientBoostingClassifier(random_state=7)
             if use_mlp:
-                models["MLP"] = MLPRegressor(
+                models["MLP"] = MLPClassifier(
                     hidden_layer_sizes=(64, 32),
                     activation="relu",
                     max_iter=400,
@@ -1018,7 +999,7 @@ with tabs[4]:
             )
             st.plotly_chart(fig_m, use_container_width=True)
 
-        # Hyperparameter tuning demo on RF
+        # Hyperparameter tuning
         st.markdown("### 🎛 Hyperparameter tuning (RandomizedSearchCV on RandomForest)")
         if target == "soh":
             base_rf = RandomForestRegressor(random_state=7, n_jobs=-1)
@@ -1056,10 +1037,11 @@ with tabs[4]:
             st.write(f"Best params: `{search.best_params_}` — Accuracy={acc_tuned:.3f}")
 
         st.caption(
-            "RandomizedSearchCV with n_jobs=-1 shows high‑performance parallel hyperparameter search."
+            "RandomizedSearchCV with n_jobs=-1 shows parallel hyperparameter search "
+            "(high‑performance computing)."
         )
 
-        # Simple RUL estimate (only for SOH regression)
+        # Simple RUL estimate for regression target
         if target == "soh":
             st.markdown("---")
             st.subheader("🔮 Simple RUL estimate (Remaining Useful Life)")
@@ -1113,22 +1095,22 @@ with tabs[4]:
                     "SOH trend not decreasing enough to estimate RUL reliably for these cells."
                 )
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # 6. TIME-SERIES & FORECAST
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 with tabs[5]:
     explain(
         "Time-series & forecast",
         [
-            "Treat SOH as a time-series and fit a simple AutoReg model (if statsmodels is installed).",
-            "Goal: show how forecasting could be used to anticipate future degradation.",
+            "Treat SOH as a time series and fit an AutoReg model.",
+            "Shows forecasting and temporal reasoning for EV batteries.",
         ],
     )
 
     if not STATS_OK:
         st.info(
-            "statsmodels is not installed in this environment, so the AutoReg forecast "
-            "demo is disabled. Add `statsmodels` to requirements.txt to enable it."
+            "statsmodels is not installed, so the AutoReg forecast demo is disabled. "
+            "Add `statsmodels` to requirements.txt to enable it."
         )
     else:
         dfy = current_df.dropna(subset=["soh"]).copy()
@@ -1144,7 +1126,6 @@ with tabs[5]:
             if len(series) < 20:
                 st.info("Need at least 20 points to fit an AutoReg model.")
             else:
-                # Use last N points for fitting
                 N = min(80, len(series))
                 s_train = series[-N:]
                 c_train = cycles[-N:]
@@ -1185,15 +1166,15 @@ with tabs[5]:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # 7. INSIGHTS & STORY
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 with tabs[6]:
     explain(
         "Insights & Story",
         [
-            "High-level narrative you could use in your presentation/report.",
-            "Connects the dots between EDA, missingness, modelling, and EV fleet decisions.",
+            "High-level narrative for the report/presentation.",
+            "Real-world recommendations for EV fleets based on results.",
         ],
     )
 
@@ -1209,9 +1190,8 @@ with tabs[6]:
         - Compare **Urban**, **Highway**, and **Mixed** duty cycles side-by-side.
         - See how **temperature**, **energy throughput**, and **current** relate to SOH degradation.
         - Understand where the data are **missing** and how different **imputation** schemes change the picture.
-        - Train and compare multiple predictive models for **SOH** (and optionally health **buckets**),
-          using proper **encoding** and **scaling**.
-        - Get a first-cut estimate of **Remaining Useful Life (RUL)** in number of cycles.
+        - Train and compare multiple predictive models for **SOH** (and optionally health **buckets**).
+        - Get a first-cut estimate of **Remaining Useful Life (RUL)** in cycles.
         - Explore a simple **time-series forecast** of future SOH.
         """
     )
@@ -1219,29 +1199,28 @@ with tabs[6]:
     st.markdown("### Real-world recommendations (examples)")
     st.write(
         """
-        - **Temperature control**: The synthetic data illustrate how high `temp_max` cycles
-          accelerate degradation and are associated with more missing SOH measurements. In practice,
-          fleet operators should monitor thermal events and reduce exposure to very high pack temperatures.
-        - **Urban vs highway usage**: Urban profiles accumulate more energy throughput (stop-and-go, AC loads),
-          and see faster SOH decline. That suggests different **maintenance schedules** or **warranty windows**
-          by usage class.
-        - **Handling missing data**: Comparing Simple, KNN, and Iterative imputation shows that more
-          sophisticated methods can reduce bias in SOH estimates when data are missing not at random (MAR).
-        - **Model choice & uncertainty**: RandomForest and GradientBoosting often give similar MAE, while MLP
-          can overfit small datasets. A conservative pipeline would use a tree-based ensemble plus RUL trend
-          analysis, and communicate uncertainty by showing confidence intervals or multiple models.
+        - **Temperature control**: High `temp_max` cycles accelerate degradation and are associated with more
+          missing SOH measurements. Fleet operators should monitor thermal events and reduce exposure to very
+          high pack temperatures.
+        - **Usage-dependent maintenance**: Urban profiles degrade faster than highway profiles, suggesting
+          different maintenance intervals or warranty windows by usage class.
+        - **Missing data strategy**: Comparing Simple, KNN, and Iterative imputation shows that more
+          sophisticated methods can reduce bias when data are MAR (Missing At Random).
+        - **Model choice & uncertainty**: Tree-based ensembles (RandomForest / GradientBoosting) provide strong
+          baselines. MLP adds nonlinearity at the cost of interpretability. Using multiple models and comparing
+          their errors gives a sense of uncertainty.
         """
     )
 
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 # 8. EXPORT
-# ---------------------------------------------------------------------
+# ------------------------------------------------------------------
 with tabs[7]:
     explain(
         "Export",
         [
-            "Download a cleaned per-cycle dataset for further analysis or use in a separate notebook.",
-            "This is what you would commit to GitHub alongside the app.",
+            "Download a cleaned per-cycle dataset for further analysis.",
+            "This CSV is what you would commit to GitHub as the main artifact.",
         ],
     )
 
@@ -1259,6 +1238,5 @@ with tabs[7]:
     )
 
     st.caption(
-        "Tip: store this CSV in your GitHub repo under `data/` and describe the schema "
-        "in your README / data dictionary."
+        "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
