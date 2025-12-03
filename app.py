@@ -91,7 +91,7 @@ h1, h2, h3, h4, h5, h6 {
 st.markdown(DARK_CSS, unsafe_allow_html=True)
 
 PLOTLY_TEMPLATE = "plotly_dark"
-EOL_THRESH = 0.80  # End-of-life threshold for SOH
+EOL_THRESH = 0.80
 MIN_LABELS_TRAIN = 40
 
 
@@ -251,11 +251,10 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
     rng = np.random.default_rng(seed + 123)
     m_mcar_q = rng.random(len(df)) < 0.06
     df.loc[m_mcar_q, "q_abs"] = np.nan
-
     m_mcar_v = rng.random(len(df)) < 0.04
     df.loc[m_mcar_v, "v_std"] = np.nan
 
-    # MAR: hotter cycles have missing SOH and capacity
+    # MAR: hotter cycles → missing SOH and capacity
     high_temp = df["temp_max"] > (p["temp0"] + 12)
     mar_mask = high_temp & (rng.random(len(df)) < 0.35)
     df.loc[mar_mask, ["soh", "cap_ah"]] = np.nan
@@ -338,16 +337,17 @@ combined_clean, n_before_combined, n_after_combined = clean_data(combined_raw)
 current_df = combined_clean.copy()
 
 # -------------------------------------------------------------------
-# TABS
+# TABS (SYSTEMATIC)
 # -------------------------------------------------------------------
 tabs = st.tabs(
     [
         "🏠 Summary",
         "📦 Data Overview",
-        "📊 EDA & Comparison",
-        "🧩 Missingness & Imputation",
-        "🔁 Encoding & Models",
-        "⏱ Time-Series Forecast",
+        "📊 EDA & Dataset Comparison",
+        "🧩 Missingness Lab",
+        "🔁 Encoding Demo & Classical Models",
+        "🧠 Advanced Models (NN & XGBoost)",
+        "📈 SOH & RUL + Time-Series",
         "🌍 Insights & Rubric",
         "💾 Export",
     ]
@@ -589,11 +589,11 @@ with tabs[2]:
         st.plotly_chart(fig_sc, use_container_width=True)
 
 # -------------------------------------------------------------------
-# 4. MISSINGNESS & IMPUTATION
+# 4. MISSINGNESS LAB
 # -------------------------------------------------------------------
 with tabs[3]:
     explain(
-        "Missingness & Imputation",
+        "Missingness Lab",
         [
             "Quantify and visualise missing data.",
             "Compare Simple / KNN / Iterative imputation RMSE.",
@@ -696,9 +696,15 @@ with tabs[3]:
 
 
 # -------------------------------------------------------------------
-# ENCODING HELPERS
+# ENCODING HELPER
 # -------------------------------------------------------------------
 def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
+    """
+    Returns:
+        dict with:
+            X_tr, X_te, y_train, y_test, preprocessor, tfidf, feature_cols,
+            train_struct, encoded_train_df, encoding_map_df, dfy
+    """
     dfy = df.dropna(subset=[target]).copy()
     if dfy.empty:
         return None
@@ -721,7 +727,6 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
     if target == "bucket":
         y = y.astype(str)
 
-    # train/test split
     stratify = y if target == "bucket" and y.nunique() > 1 else None
     X_train_struct, X_test_struct, y_train, y_test = train_test_split(
         X_struct,
@@ -796,7 +801,6 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
         X_tr, columns=feature_names_full, index=X_train_struct.index
     )
 
-    # encoding map
     mapping_rows = []
     for name in enc_feature_names:
         if name.startswith("num__"):
@@ -850,17 +854,16 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
 
 
 # -------------------------------------------------------------------
-# 5. ENCODING & MODELS
+# 5. ENCODING DEMO & CLASSICAL MODELS
 # -------------------------------------------------------------------
 with tabs[4]:
     explain(
-        "Encoding & Models",
+        "Encoding Demo & Classical Models",
         [
             "Show raw features BEFORE encoding.",
             "Show encoded design matrix AFTER encoding.",
-            "Show encoding map (raw column → encoded column).",
-            "Compare multiple models (RF, GB, MLP, optional XGB) on combined data and per dataset.",
-            "Demonstrate hyperparameter tuning and a simple RUL calculation.",
+            "Show encoding map (raw → encoded).",
+            "Train classical models (RF, GradientBoosting) on the combined data.",
         ],
     )
 
@@ -889,8 +892,7 @@ with tabs[4]:
         with c3:
             kpi("Test rows", len(y_test))
 
-        # BEFORE encoding
-        st.markdown("### 🔤 Before encoding (raw features)")
+        st.markdown("### 🔤 BEFORE encoding (raw features)")
         show_cols = ["dataset", "cell_id", "cycle", target]
         extra = [
             c
@@ -908,70 +910,27 @@ with tabs[4]:
         show_cols += extra
         show_cols = [c for c in show_cols if c in dfy.columns]
         st.dataframe(dfy[show_cols].head(10), use_container_width=True)
-        st.caption(
-            "Original per-cycle features used for modelling: numeric (q_abs, e_abs, temperatures, voltages), "
-            "categorical (dataset, cell_id, bucket), and text (usage_text)."
-        )
 
-        # AFTER encoding
-        st.markdown("### 🔁 After encoding (design matrix)")
+        st.markdown("### 🔁 AFTER encoding (design matrix)")
         st.dataframe(encoded_train_df.head(10), use_container_width=True)
-        st.caption(
-            "After encoding: numeric → imputed + standardized, categorical → one-hot, "
-            "text → TF-IDF features. This is the matrix fed into the models."
-        )
 
-        # Encoding map
         st.markdown("### 🧬 Encoding map (raw → encoded)")
         st.dataframe(encoding_map_df, use_container_width=True)
 
-        # Models
         st.markdown("---")
-        st.subheader(f"Model comparison (combined selected datasets) – target: {target}")
+        st.subheader(f"Classical model comparison – target: {target}")
 
         models = {}
         if target == "soh":
             models["RandomForest"] = RandomForestRegressor(
-                n_estimators=250,
-                max_depth=None,
-                random_state=7,
-                n_jobs=-1,
+                n_estimators=250, random_state=7, n_jobs=-1
             )
             models["GradientBoosting"] = GradientBoostingRegressor(random_state=7)
-            if use_mlp:
-                models["MLP"] = MLPRegressor(
-                    hidden_layer_sizes=(64, 32),
-                    activation="relu",
-                    max_iter=400,
-                    alpha=1e-3,
-                    random_state=7,
-                )
-            if use_xgb and XGB_OK:
-                models["XGBoost"] = xgb.XGBRegressor(
-                    n_estimators=300,
-                    learning_rate=0.05,
-                    max_depth=4,
-                    subsample=0.9,
-                    colsample_bytree=0.9,
-                    random_state=7,
-                    n_jobs=-1,
-                )
         else:
             models["RandomForest"] = RandomForestClassifier(
-                n_estimators=250,
-                max_depth=None,
-                random_state=7,
-                n_jobs=-1,
+                n_estimators=250, random_state=7, n_jobs=-1
             )
             models["GradientBoosting"] = GradientBoostingClassifier(random_state=7)
-            if use_mlp:
-                models["MLP"] = MLPClassifier(
-                    hidden_layer_sizes=(64, 32),
-                    activation="relu",
-                    max_iter=400,
-                    alpha=1e-3,
-                    random_state=7,
-                )
 
         rows = []
         fitted_models = {}
@@ -998,7 +957,7 @@ with tabs[4]:
                 y="MAE",
                 color="R2",
                 template=PLOTLY_TEMPLATE,
-                title="SOH regression performance",
+                title="SOH regression (classical models)",
             )
             st.plotly_chart(fig_m, use_container_width=True)
         else:
@@ -1007,131 +966,171 @@ with tabs[4]:
                 x="model",
                 y="Accuracy",
                 template=PLOTLY_TEMPLATE,
-                title="Bucket classification accuracy",
+                title="Bucket classification (classical models)",
             )
             st.plotly_chart(fig_m, use_container_width=True)
 
-        # Per-dataset performance
-        st.markdown("### 📊 Per-dataset model performance")
-        perf_rows = []
-        for ds_name, gsub in dfy.groupby("dataset"):
-            enc_ds = build_encoded_matrices(gsub, target, impute_choice)
-            if enc_ds is None or enc_ds["dfy"].shape[0] < MIN_LABELS_TRAIN:
-                continue
-            X_tr_ds = enc_ds["X_tr"]
-            X_te_ds = enc_ds["X_te"]
-            y_tr_ds = enc_ds["y_train"]
-            y_te_ds = enc_ds["y_test"]
+# -------------------------------------------------------------------
+# 6. ADVANCED MODELS (NN & XGBOOST)
+# -------------------------------------------------------------------
+with tabs[5]:
+    explain(
+        "Advanced Models (NN & XGBoost)",
+        [
+            "Use the SAME encoding pipeline but focus on advanced models.",
+            "Tabular deep learning: MLPRegressor / MLPClassifier.",
+            "Gradient boosting ensemble: optional XGBoost.",
+        ],
+    )
 
-            for name, model in models.items():
-                model.fit(X_tr_ds, y_tr_ds)
-                y_pred_ds = model.predict(X_te_ds)
+    target = "soh" if task_type == "SOH regression" else "bucket"
+    enc_adv = build_encoded_matrices(current_df, target, impute_choice)
+
+    if enc_adv is None or enc_adv["dfy"].shape[0] < MIN_LABELS_TRAIN:
+        st.info(
+            f"Not enough labelled rows for target '{target}'. Need at least {MIN_LABELS_TRAIN}."
+        )
+    else:
+        X_tr = enc_adv["X_tr"]
+        X_te = enc_adv["X_te"]
+        y_train = enc_adv["y_train"]
+        y_test = enc_adv["y_test"]
+
+        advanced_models = {}
+        if target == "soh":
+            if use_mlp:
+                advanced_models["MLPRegressor"] = MLPRegressor(
+                    hidden_layer_sizes=(128, 64, 32),
+                    activation="relu",
+                    max_iter=400,
+                    alpha=1e-3,
+                    random_state=7,
+                )
+            if use_xgb and XGB_OK:
+                advanced_models["XGBoostRegressor"] = xgb.XGBRegressor(
+                    n_estimators=300,
+                    learning_rate=0.05,
+                    max_depth=4,
+                    subsample=0.9,
+                    colsample_bytree=0.9,
+                    random_state=7,
+                    n_jobs=-1,
+                )
+        else:
+            if use_mlp:
+                advanced_models["MLPClassifier"] = MLPClassifier(
+                    hidden_layer_sizes=(128, 64, 32),
+                    activation="relu",
+                    max_iter=400,
+                    alpha=1e-3,
+                    random_state=7,
+                )
+            if use_xgb and XGB_OK:
+                advanced_models["XGBoostClassifier"] = xgb.XGBClassifier(
+                    n_estimators=300,
+                    learning_rate=0.05,
+                    max_depth=4,
+                    subsample=0.9,
+                    colsample_bytree=0.9,
+                    random_state=7,
+                    n_jobs=-1,
+                    eval_metric="logloss",
+                )
+
+        if not advanced_models:
+            st.info("Enable MLP and/or XGBoost in the sidebar to see advanced models.")
+        else:
+            rows = []
+            for name, model in advanced_models.items():
+                model.fit(X_tr, y_train)
+                y_pred = model.predict(X_te)
                 if target == "soh":
-                    mae_ds = mean_absolute_error(y_te_ds, y_pred_ds)
-                    r2_ds = r2_score(y_te_ds, y_pred_ds)
-                    perf_rows.append(
-                        dict(dataset=ds_name, model=name, MAE=mae_ds, R2=r2_ds)
-                    )
+                    mae = mean_absolute_error(y_test, y_pred)
+                    r2 = r2_score(y_test, y_pred)
+                    rows.append({"model": name, "MAE": mae, "R2": r2})
                 else:
-                    acc_ds = accuracy_score(y_te_ds, y_pred_ds)
-                    perf_rows.append(
-                        dict(dataset=ds_name, model=name, Accuracy=acc_ds)
-                    )
+                    acc = accuracy_score(y_test, y_pred)
+                    rows.append({"model": name, "Accuracy": acc})
 
-        if perf_rows:
-            perf_df = pd.DataFrame(perf_rows)
-            st.dataframe(perf_df, use_container_width=True)
+            res_adv = pd.DataFrame(rows)
+            st.dataframe(res_adv, use_container_width=True)
 
             if target == "soh":
-                fig_perf = px.bar(
-                    perf_df,
+                fig_adv = px.bar(
+                    res_adv,
                     x="model",
                     y="MAE",
-                    color="dataset",
-                    barmode="group",
+                    color="R2",
                     template=PLOTLY_TEMPLATE,
-                    title="SOH model MAE by dataset",
+                    title="SOH regression (advanced models)",
                 )
-                st.plotly_chart(fig_perf, use_container_width=True)
+                st.plotly_chart(fig_adv, use_container_width=True)
             else:
-                fig_perf = px.bar(
-                    perf_df,
+                fig_adv = px.bar(
+                    res_adv,
                     x="model",
                     y="Accuracy",
-                    color="dataset",
-                    barmode="group",
                     template=PLOTLY_TEMPLATE,
-                    title="Bucket model Accuracy by dataset",
+                    title="Bucket classification (advanced models)",
                 )
-                st.plotly_chart(fig_perf, use_container_width=True)
+                st.plotly_chart(fig_adv, use_container_width=True)
+
+# -------------------------------------------------------------------
+# 7. SOH & RUL + TIME-SERIES
+# -------------------------------------------------------------------
+with tabs[6]:
+    explain(
+        "SOH & RUL + Time-Series",
+        [
+            "Use a RandomForest on encoded features to estimate SOH trends vs cycle.",
+            "Convert SOH trend into a simple Remaining Useful Life estimate (RUL).",
+            "Optionally fit AutoReg to the SOH time-series (if statsmodels is installed).",
+        ],
+    )
+
+    if task_type != "SOH regression":
+        st.info("Switch modelling task to 'SOH regression' in the sidebar to enable this tab.")
+    else:
+        enc_rul = build_encoded_matrices(current_df, "soh", impute_choice)
+        if enc_rul is None or enc_rul["dfy"].shape[0] < MIN_LABELS_TRAIN:
+            st.info("Not enough rows with SOH labels to estimate RUL.")
         else:
-            st.info("Not enough data per dataset to compute per-dataset metrics.")
+            dfy_r = enc_rul["dfy"]
+            X_tr_r = enc_rul["X_tr"]
+            X_te_r = enc_rul["X_te"]
+            y_train_r = enc_rul["y_train"]
+            y_test_r = enc_rul["y_test"]
 
-        # Hyperparameter tuning
-        st.markdown("### 🎛 Hyperparameter tuning (RandomizedSearchCV on RandomForest)")
-        if target == "soh":
-            base_rf = RandomForestRegressor(random_state=7, n_jobs=-1)
-            scoring = "neg_mean_absolute_error"
-        else:
-            base_rf = RandomForestClassifier(random_state=7, n_jobs=-1)
-            scoring = "accuracy"
-
-        param_dist = {
-            "n_estimators": [150, 250, 350],
-            "max_depth": [None, 6, 10],
-            "min_samples_leaf": [1, 2, 5],
-        }
-
-        search = RandomizedSearchCV(
-            base_rf,
-            param_distributions=param_dist,
-            n_iter=6,
-            cv=3,
-            scoring=scoring,
-            n_jobs=-1,
-            random_state=7,
-        )
-        search.fit(X_tr, y_train)
-        y_tuned = search.predict(X_te)
-
-        if target == "soh":
-            mae_tuned = mean_absolute_error(y_test, y_tuned)
-            r2_tuned = r2_score(y_test, y_tuned)
-            st.write(
-                f"Best params: `{search.best_params_}` — MAE={mae_tuned:.4f}, R²={r2_tuned:.3f}"
+            rf_rul = RandomForestRegressor(
+                n_estimators=250,
+                max_depth=None,
+                random_state=7,
+                n_jobs=-1,
             )
-        else:
-            acc_tuned = accuracy_score(y_test, y_tuned)
-            st.write(f"Best params: `{search.best_params_}` — Accuracy={acc_tuned:.3f}")
+            rf_rul.fit(X_tr_r, y_train_r)
+            y_pred_r = rf_rul.predict(X_te_r)
+            mae_r = mean_absolute_error(y_test_r, y_pred_r)
+            r2_r = r2_score(y_test_r, y_pred_r)
 
-        st.caption(
-            "RandomizedSearchCV with n_jobs=-1 demonstrates parallel hyperparameter search "
-            "(high-performance computing)."
-        )
+            kpi("SOH RF MAE", mae_r, "RUL model baseline")
+            kpi("SOH RF R²", r2_r, "RUL model baseline")
 
-        # Simple RUL for regression
-        if target == "soh":
-            st.markdown("---")
-            st.subheader("🔮 Simple RUL estimate (Remaining Useful Life)")
-
-            best_row = res_df.sort_values("MAE").iloc[0]
-            best_name = best_row["model"]
-            best_model = models[best_name]
+            st.markdown("### Simple RUL estimate (Remaining Useful Life in cycles)")
 
             rul_rows = []
-            for cell, gcell in dfy.groupby("cell_id"):
+            for cell, gcell in dfy_r.groupby("cell_id"):
                 gcell = gcell.sort_values("cycle")
-                Xc_struct = gcell[enc["feature_cols"]]
-                Xc_enc = enc["preprocessor"].transform(Xc_struct)
-                if enc["tfidf"] is not None and "usage_text" in Xc_struct.columns:
-                    Xt_cell = enc["tfidf"].transform(
+                Xc_struct = gcell[enc_rul["feature_cols"]]
+                Xc_enc = enc_rul["preprocessor"].transform(Xc_struct)
+                if enc_rul["tfidf"] is not None and "usage_text" in Xc_struct.columns:
+                    Xt_cell = enc_rul["tfidf"].transform(
                         Xc_struct["usage_text"].fillna("").astype(str)
                     )
                     Xc = np.hstack([Xc_enc, Xt_cell.toarray()])
                 else:
                     Xc = Xc_enc
 
-                soh_hat = best_model.predict(Xc)
+                soh_hat = rf_rul.predict(Xc)
                 cyc = gcell["cycle"].astype(int).values
                 if len(cyc) < 4:
                     continue
@@ -1156,69 +1155,65 @@ with tabs[4]:
                     use_container_width=True,
                 )
             else:
-                st.info(
-                    "SOH trend not decreasing enough to estimate RUL reliably for these cells."
-                )
+                st.info("SOH trend not decreasing enough to estimate RUL reliably.")
 
-# -------------------------------------------------------------------
-# 6. TIME-SERIES FORECAST
-# -------------------------------------------------------------------
-with tabs[5]:
-    explain(
-        "Time-series forecast",
-        [
-            "Treat SOH as a time-series and fit an AutoReg model (specialised time-series DS).",
-            "Shows how you could forecast future degradation trajectories.",
-        ],
-    )
+        st.markdown("---")
+        st.subheader("SOH time-series forecast (AutoReg)")
 
-    if not STATS_OK:
-        st.info(
-            "statsmodels is not installed, so the AutoReg forecast demo is disabled. "
-            "Add `statsmodels` to requirements.txt to enable it."
-        )
-    else:
-        dfy = current_df.dropna(subset=["soh"]).copy()
-        if dfy.empty:
-            st.info("No SOH labels available for forecasting.")
+        if not STATS_OK:
+            st.info(
+                "statsmodels is not installed, so the AutoReg forecast demo is disabled. "
+                "Add `statsmodels` to requirements.txt to enable it."
+            )
         else:
-            cell_options = sorted(dfy["cell_id"].astype(str).unique())
-            sel_cell = st.selectbox("Select cell for forecast", cell_options)
-            g = dfy[dfy["cell_id"].astype(str) == sel_cell].sort_values("cycle")
-            series = g["soh"].astype(float).values
-            cycles = g["cycle"].values
-
-            if len(series) < 20:
-                st.info("Need at least 20 points to fit an AutoReg model.")
+            dfy = current_df.dropna(subset=["soh"]).copy()
+            if dfy.empty:
+                st.info("No SOH labels available for forecasting.")
             else:
-                N = min(80, len(series))
-                s_train = series[-N:]
-                c_train = cycles[-N:]
-                model = AutoReg(s_train, lags=5, old_names=False).fit()
-                steps = 20
-                forecast = model.predict(start=len(s_train), end=len(s_train) + steps - 1)
-                cyc_future = np.arange(c_train[-1] + 1, c_train[-1] + 1 + steps)
+                cell_options = sorted(dfy["cell_id"].astype(str).unique())
+                sel_cell = st.selectbox("Select cell for forecast", cell_options)
+                g = dfy[dfy["cell_id"].astype(str) == sel_cell].sort_values("cycle")
+                series = g["soh"].astype(float).values
+                cycles = g["cycle"].values
 
-                fig = px.line(
-                    x=c_train,
-                    y=s_train,
-                    template=PLOTLY_TEMPLATE,
-                    labels={"x": "Cycle", "y": "SOH"},
-                    title=f"AutoReg forecast for cell {sel_cell}",
-                )
-                fig.add_scatter(x=cyc_future, y=forecast, mode="lines+markers", name="Forecast")
-                fig.add_hline(
-                    y=EOL_THRESH,
-                    line_dash="dot",
-                    line_color="red",
-                    annotation_text="EOL",
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                if len(series) < 20:
+                    st.info("Need at least 20 points to fit an AutoReg model.")
+                else:
+                    N = min(80, len(series))
+                    s_train = series[-N:]
+                    c_train = cycles[-N:]
+                    model_ar = AutoReg(s_train, lags=5, old_names=False).fit()
+                    steps = 20
+                    forecast = model_ar.predict(
+                        start=len(s_train), end=len(s_train) + steps - 1
+                    )
+                    cyc_future = np.arange(c_train[-1] + 1, c_train[-1] + 1 + steps)
+
+                    fig = px.line(
+                        x=c_train,
+                        y=s_train,
+                        template=PLOTLY_TEMPLATE,
+                        labels={"x": "Cycle", "y": "SOH"},
+                        title=f"AutoReg forecast for cell {sel_cell}",
+                    )
+                    fig.add_scatter(
+                        x=cyc_future,
+                        y=forecast,
+                        mode="lines+markers",
+                        name="Forecast",
+                    )
+                    fig.add_hline(
+                        y=EOL_THRESH,
+                        line_dash="dot",
+                        line_color="red",
+                        annotation_text="EOL",
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
 # -------------------------------------------------------------------
-# 7. INSIGHTS & RUBRIC
+# 8. INSIGHTS & RUBRIC
 # -------------------------------------------------------------------
-with tabs[6]:
+with tabs[7]:
     explain(
         "Insights & Rubric mapping",
         [
@@ -1247,7 +1242,7 @@ with tabs[6]:
         ("Data Collection & Prep", "3 synthetic datasets (Urban/Highway/Mixed), cleaned, typed, merged"),
         ("EDA & Visualizations", "Histograms, boxplots, correlation heatmaps, scatter, violin, per-dataset comparison"),
         ("Data Processing & Features", "Multiple imputers (Simple/KNN/MICE), scaling, bucket labels, TF-IDF text"),
-        ("Models (basic)", "RandomForest, GradientBoosting, MLP; regression + classification, metrics tables"),
+        ("Models (basic)", "RandomForest, GradientBoosting; regression + classification, metrics tables"),
         ("Streamlit App", "Multi-tab app, dataset & model selectors, in-app documentation"),
         ("GitHub", "Export CSV + (to be added) README/data dictionary in repo"),
         ("Advanced Models", "MLP neural net; optional XGBoost; RandomizedSearchCV tuning"),
@@ -1260,9 +1255,9 @@ with tabs[6]:
     st.dataframe(rubric_df, use_container_width=True)
 
 # -------------------------------------------------------------------
-# 8. EXPORT
+# 9. EXPORT
 # -------------------------------------------------------------------
-with tabs[7]:
+with tabs[8]:
     explain(
         "Export",
         [
