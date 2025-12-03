@@ -1261,17 +1261,21 @@ with tabs[5]:
 # -----------------------------------------------------------------------------
 # 7. MODELING (SOH & RUL)
 # -----------------------------------------------------------------------------
+
+              # -----------------------------------------------------------------------------
+# 7. MODELING (SOH & RUL)
+# -----------------------------------------------------------------------------
 with tabs[6]:
     explain(
         "Modeling (SOH & RUL)",
         [
             "SOH = State of Health (capacity_now / baseline capacity).",
-            "RUL = Remaining Useful Life (number of cycles until SOH crosses the End-of-Life (EOL) threshold).",
-            "This tab trains multiple models to predict SOH from encoded features and then estimates RUL.",
-            "It also explicitly shows the feature table BEFORE encoding and AFTER encoding (for the rubric).",
+            "RUL = Remaining Useful Life (number of cycles until SOH drops below the EOL (End-of-Life) threshold).",
+            "This tab shows data BEFORE encoding, data AFTER encoding, explains how encoding is done, and compares multiple models.",
         ],
     )
 
+    # Use only rows where SOH is known
     dfy = feat.dropna(subset=["soh"]).copy()
     n_labels = int(dfy.shape[0])
 
@@ -1288,44 +1292,71 @@ with tabs[6]:
             f"Need at least {min_labels_train} labeled cycles to train models; currently have {n_labels}."
         )
     else:
-        # ------------------------------------------------------------------
-        # 1) Define raw feature set (BEFORE encoding)
-        # ------------------------------------------------------------------
-        drop_cols = ["soh", "cap_ah"]  # we keep cap_ah just as label-like info
+        # ---------------------------------------------------------------------
+        # 1) Define feature sets (numeric, categorical, text)
+        # ---------------------------------------------------------------------
+        drop_cols = ["soh", "cap_ah"]   # don't use as input features
         feature_cols = [c for c in dfy.columns if c not in drop_cols]
 
+        # numeric features (kept as numbers but later scaled)
         num_features = [
-            c
-            for c in feature_cols
-            if pd.api.types.is_numeric_dtype(dfy[c])
-            and c not in ["cycle"]
+            c for c in feature_cols
+            if pd.api.types.is_numeric_dtype(dfy[c]) and c not in ["cycle"]
         ]
-        # text feature handled separately
-        text_feature = "usage_text" if "usage_text" in dfy.columns else None
+
+        # categorical features (will be one‑hot encoded)
         cat_features = [
-            c
-            for c in feature_cols
-            if dfy[c].dtype == "object" and c != text_feature
+            c for c in feature_cols
+            if dfy[c].dtype == "object" and c != "usage_text"
         ]
+
+        # optional free‑text feature
+        text_feature = "usage_text" if "usage_text" in dfy.columns else None
 
         y = dfy["soh"].astype(float).values
+        X_struct = dfy[feature_cols].copy()
 
-        st.markdown("### Raw feature table used for modeling (before encoding)")
-        show_cols = (
-            ["dataset", "cell_id", "cycle", "soh"]
-            + [c for c in feature_cols if c not in ["dataset", "cell_id", "cycle", "soh"]]
-        )
-        show_cols = [c for c in show_cols if c in dfy.columns]
-        st.dataframe(dfy[show_cols].head(15), use_container_width=True)
-        st.caption(
-            "Above: raw per-cycle data including numeric features (e.g., q_abs, e_abs, temp_mean), "
-            "categorical features (dataset, regime), and text (usage_text)."
-        )
+        # ---------------------------------------------------------------------
+        # 2) Text encoding (TF‑IDF) – only if usage_text exists
+        # ---------------------------------------------------------------------
+        if text_feature:
+            tfidf = TfidfVectorizer(max_features=50)
+            X_text_full = tfidf.fit_transform(
+                X_struct[text_feature].fillna("").astype(str)
+            )
+        else:
+            tfidf = None
+            X_text_full = None
 
-        # ------------------------------------------------------------------
-        # 2) Preprocessing: numeric + categorical encoders
-        #    (fit ON TRAIN SET ONLY; transform both train and test)
-        # ------------------------------------------------------------------
+        # ---------------------------------------------------------------------
+        # 3) Train/Test split by cell_id (to reduce leakage)
+        # ---------------------------------------------------------------------
+        cells = dfy["cell_id"].astype(str).values
+        unique_cells = np.unique(cells)
+        rng = np.random.default_rng(7)
+        rng.shuffle(unique_cells)
+
+        n_train_cells = max(1, int(0.7 * len(unique_cells)))
+        train_cells = set(unique_cells[:n_train_cells])
+        train_mask = np.isin(cells, list(train_cells))
+
+        X_train_struct = X_struct.iloc[train_mask]
+        X_test_struct  = X_struct.iloc[~train_mask]
+        y_train = y[train_mask]
+        y_test  = y[~train_mask]
+
+        if X_text_full is not None:
+            X_train_text = X_text_full[train_mask]
+            X_test_text  = X_text_full[~train_mask]
+        else:
+            X_train_text = None
+            X_test_text  = None
+
+        # ---------------------------------------------------------------------
+        # 4) ColumnTransformer for numeric + categorical encoding
+        #     - numeric: median imputation + StandardScaler
+        #     - categorical: most_frequent imputation + OneHotEncoder
+        # ---------------------------------------------------------------------
         num_transformer = Pipeline(
             steps=[
                 ("imputer", SimpleImputer(strategy="median")),
@@ -1335,13 +1366,7 @@ with tabs[6]:
         cat_transformer = Pipeline(
             steps=[
                 ("imputer", SimpleImputer(strategy="most_frequent")),
-                (
-                    "onehot",
-                    OneHotEncoder(
-                        handle_unknown="ignore",
-                        sparse_output=False,
-                    ),
-                ),
+                ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
             ]
         )
 
@@ -1353,85 +1378,112 @@ with tabs[6]:
 
         preprocessor = ColumnTransformer(transformers=transformers)
 
-        # Structured (non-text) part
-        X_struct = dfy[feature_cols].copy()
+        # ---------------------------------------------------------------------
+        # 5) FIT preprocessor on TRAIN ONLY, then transform both (fixes error)
+        # ---------------------------------------------------------------------
+        X_train_struct_enc = preprocessor.fit_transform(X_train_struct)
+        X_test_struct_enc  = preprocessor.transform(X_test_struct)
 
-        # Text: fit TF-IDF on TRAIN only; append to encoded matrix
-        if text_feature:
-            tfidf = TfidfVectorizer(max_features=50)
-        else:
-            tfidf = None
+        # ---------------------------------------------------------------------
+        # 6) SHOW BEFORE ENCODING
+        # ---------------------------------------------------------------------
+        st.markdown("### 🔎 Raw feature table (before encoding)")
+        st.caption(
+            "Raw per‑cycle features: numeric columns (q_abs, e_abs, temp_mean, etc.), "
+            "categorical columns (dataset, regime, bucket…), and optional text (usage_text)."
+        )
+        st.dataframe(
+            X_train_struct.head(10).reset_index(drop=True),
+            use_container_width=True,
+        )
 
-        # ------------------------------------------------------------------
-        # 3) Train / test split by cell_id (to reduce leakage)
-        # ------------------------------------------------------------------
-        cells = dfy["cell_id"].astype(str).values
-        unique_cells = np.unique(cells)
-        rng = np.random.default_rng(7)
-        rng.shuffle(unique_cells)
-        n_train_cells = max(1, int(0.7 * len(unique_cells)))
-        train_cells = set(unique_cells[:n_train_cells])
-        train_mask = np.isin(cells, list(train_cells))
+        # ---------------------------------------------------------------------
+        # 7) SHOW AFTER ENCODING (all‑numeric matrix)
+        # ---------------------------------------------------------------------
+        st.markdown("### 🔁 Encoded feature matrix (after encoding)")
+        st.caption(
+            "All features are now numeric. "
+            "Numeric features are **imputed with median** and **standardized**. "
+            "Categorical features are **one‑hot encoded** into 0/1 columns."
+        )
+        try:
+            enc_feature_names = preprocessor.get_feature_names_out()
+        except Exception:
+            enc_feature_names = [f"f{i}" for i in range(X_train_struct_enc.shape[1])]
 
-        X_train_struct = X_struct.iloc[train_mask]
-        X_test_struct = X_struct.iloc[~train_mask]
-        y_train = y[train_mask]
-        y_test = y[~train_mask]
+        encoded_preview = pd.DataFrame(
+            X_train_struct_enc[:10],
+            columns=enc_feature_names,
+        )
+        st.dataframe(encoded_preview, use_container_width=True)
 
-        # ---- FIT ENCODERS ON TRAIN ----
-        preprocessor.fit(X_train_struct)
+        # ---------------------------------------------------------------------
+        # 8) EXPLAIN HOW ENCODING WORKS (mapping table)
+        # ---------------------------------------------------------------------
+        st.markdown("### 🧬 Encoding map (raw column → encoded column)")
+        mapping_rows = []
+        for name in enc_feature_names:
+            # examples: "num__q_abs", "cat__dataset_Urban"
+            if name.startswith("num__"):
+                raw_name = name.split("__", 1)[1]
+                mapping_rows.append(
+                    dict(
+                        encoded_column=name,
+                        source_column=raw_name,
+                        encoding_type="numeric → impute(median)+scale",
+                        category_value="—",
+                    )
+                )
+            elif name.startswith("cat__"):
+                base = name.split("__", 1)[1]  # e.g. dataset_Urban
+                if "_" in base:
+                    src, cat_val = base.split("_", 1)
+                else:
+                    src, cat_val = base, ""
+                mapping_rows.append(
+                    dict(
+                        encoded_column=name,
+                        source_column=src,
+                        encoding_type="categorical → one-hot",
+                        category_value=cat_val,
+                    )
+                )
+            else:
+                mapping_rows.append(
+                    dict(
+                        encoded_column=name,
+                        source_column="(other)",
+                        encoding_type="other",
+                        category_value="",
+                    )
+                )
 
-        X_train_struct_enc = preprocessor.transform(X_train_struct)
-        X_test_struct_enc = preprocessor.transform(X_test_struct)
+        mapping_df = pd.DataFrame(mapping_rows)
+        st.dataframe(mapping_df, use_container_width=True)
+        st.caption(
+            "Example: `cat__dataset_Urban = 1` means this row belongs to the Urban dataset; "
+            "`cat__dataset_Highway = 0` means it does *not* belong to Highway, etc."
+        )
 
-        enc_feature_names = preprocessor.get_feature_names_out()
-
-        # ---- Text features: fit on TRAIN and transform TEST ----
-        if tfidf is not None:
-            X_train_text = tfidf.fit_transform(
-                X_train_struct[text_feature].fillna("").astype(str)
-            )
-            X_test_text = tfidf.transform(
-                X_test_struct[text_feature].fillna("").astype(str)
-            )
-            # Combine structured + text
+        # ---------------------------------------------------------------------
+        # 9) COMBINE structured + text features for modeling
+        # ---------------------------------------------------------------------
+        if X_train_text is not None:
             X_tr = np.hstack([X_train_struct_enc, X_train_text.toarray()])
-            X_te = np.hstack([X_test_struct_enc, X_test_text.toarray()])
-            full_feature_names = list(enc_feature_names) + [
-                f"text_{i}" for i in range(X_train_text.shape[1])
-            ]
+            X_te = np.hstack([X_test_struct_enc,  X_test_text.toarray()])
         else:
             X_tr = X_train_struct_enc
             X_te = X_test_struct_enc
-            full_feature_names = list(enc_feature_names)
 
-        # ------------------------------------------------------------------
-        # 4) SHOW "AFTER ENCODING" for rubric
-        # ------------------------------------------------------------------
-        st.markdown("### Encoded feature matrix (after imputation, scaling & one-hot)")
-        st.write(
-            "Below we show a sample of the design matrix that goes into "
-            "the models. Numeric features are scaled; categorical features "
-            "are one-hot encoded; text is represented by TF-IDF columns."
-        )
-        encoded_df_preview = pd.DataFrame(
-            X_tr, columns=full_feature_names
-        ).head(15)
-        st.dataframe(encoded_df_preview, use_container_width=True)
-        st.caption(
-            "Note how `dataset`, `regime`, etc. became expanded into multiple "
-            "0/1 columns via one-hot encoding, and numeric features are now "
-            "standardized. This is exactly the 'after encoding' view."
-        )
-
-        # ------------------------------------------------------------------
-        # 5) Define and train models
-        # ------------------------------------------------------------------
-        models = {}
-        models["RandomForest"] = RandomForestRegressor(
-            n_estimators=200, max_depth=None, random_state=7, n_jobs=-1
-        )
-        models["GradientBoosting"] = GradientBoostingRegressor(random_state=7)
+        # ---------------------------------------------------------------------
+        # 10) Train several models for SOH prediction
+        # ---------------------------------------------------------------------
+        models = {
+            "RandomForest": RandomForestRegressor(
+                n_estimators=200, max_depth=None, random_state=7, n_jobs=-1
+            ),
+            "GradientBoosting": GradientBoostingRegressor(random_state=7),
+        }
 
         if use_mlp:
             models["MLP"] = MLPRegressor(
@@ -1461,16 +1513,16 @@ with tabs[6]:
 
         for name, model in models.items():
             model.fit(X_tr, y_train)
-            y_pred = model.predict(X_te)
+            y_pred = model.predict(X_te)   # ✅ same number of features now
             mae = mean_absolute_error(y_test, y_pred)
-            r2 = r2_score(y_test, y_pred)
+            r2  = r2_score(y_test, y_pred)
             rows.append(dict(model=name, MAE=mae, R2=r2))
             fitted_models[name] = model
             if mae < best_mae:
                 best_mae = mae
                 best_model_name = name
 
-        st.subheader("Model comparison (SOH regression)")
+        st.subheader("📈 SOH model comparison")
         res_df = pd.DataFrame(rows).sort_values("MAE")
         st.dataframe(res_df, use_container_width=True)
 
@@ -1480,49 +1532,15 @@ with tabs[6]:
             y="MAE",
             color="R2",
             template=PLOTLY_TEMPLATE,
-            title="SOH regression models (lower MAE is better)",
+            title="SOH regression (lower MAE is better; darker = higher R²)",
         )
         st.plotly_chart(fig_comp, use_container_width=True)
 
-        # ------------------------------------------------------------------
-        # 6) Hyperparameter tuning example (RandomizedSearchCV on RF)
-        # ------------------------------------------------------------------
+        # ---------------------------------------------------------------------
+        # 11) (optional) simple RUL estimate using the best model
+        # ---------------------------------------------------------------------
         st.markdown("---")
-        st.subheader("Hyperparameter tuning (RandomizedSearchCV on RandomForest)")
-
-        param_dist = {
-            "n_estimators": [100, 200, 300],
-            "max_depth": [None, 6, 10],
-            "min_samples_leaf": [1, 2, 5],
-        }
-        base_rf = RandomForestRegressor(
-            random_state=7, n_jobs=-1, oob_score=False
-        )
-        search = RandomizedSearchCV(
-            base_rf,
-            param_distributions=param_dist,
-            n_iter=10,
-            cv=3,
-            scoring="neg_mean_absolute_error",
-            random_state=7,
-            n_jobs=-1,
-        )
-        search.fit(X_tr, y_train)
-        y_pred_tuned = search.predict(X_te)
-        mae_tuned = mean_absolute_error(y_test, y_pred_tuned)
-        r2_tuned = r2_score(y_test, y_pred_tuned)
-        st.write(
-            f"Best RF params: `{search.best_params_}`  —  MAE={mae_tuned:.4f}, R²={r2_tuned:.3f}"
-        )
-        st.caption(
-            "RandomizedSearchCV with n_jobs=-1 demonstrates high-performance computing / parallel model search."
-        )
-
-        # ------------------------------------------------------------------
-        # 7) Simple RUL estimation (Remaining Useful Life)
-        # ------------------------------------------------------------------
-        st.markdown("---")
-        st.subheader("RUL estimation (Remaining Useful Life in cycles)")
+        st.subheader("🔮 Simple RUL estimate (cycles until EOL)")
 
         if best_model_name is not None:
             best = fitted_models[best_model_name]
@@ -1531,32 +1549,25 @@ with tabs[6]:
             for cell, g in dfy.groupby("cell_id"):
                 g = g.sort_values("cycle")
                 Xc_struct = g[feature_cols]
-                if tfidf is not None and text_feature:
+
+                Xc_struct_enc = preprocessor.transform(Xc_struct)
+                if text_feature and tfidf is not None:
                     Xt_c = tfidf.transform(
                         Xc_struct[text_feature].fillna("").astype(str)
                     )
+                    Xc_all = np.hstack([Xc_struct_enc, Xt_c.toarray()])
                 else:
-                    Xt_c = None
+                    Xc_all = Xc_struct_enc
 
-                # Use the SAME preprocessor fitted on X_train_struct
-                Xc_struct_enc = preprocessor.transform(Xc_struct)
-
-                if Xt_c is not None:
-                    Xc_full = np.hstack(
-                        [Xc_struct_enc, Xt_c.toarray()]
-                    )
-                else:
-                    Xc_full = Xc_struct_enc
-
-                shat = best.predict(Xc_full)
-                cyc = g["cycle"].astype(int).values
+                shat = best.predict(Xc_all)
+                cyc  = g["cycle"].astype(int).values
                 if len(cyc) < 4:
                     continue
-                # simple linear trend
-                coef = np.polyfit(cyc, shat, 1)
-                m, b = coef[0], coef[1]
+
+                m, b = np.polyfit(cyc, shat, 1)   # linear trend
                 if m >= 0:
-                    continue
+                    continue  # no degradation trend
+
                 eol_cycle = int((EOL_THRESH - b) / m)
                 current_cycle = int(cyc.max())
                 rul = max(eol_cycle - current_cycle, 0)
@@ -1571,16 +1582,13 @@ with tabs[6]:
 
             if rul_rows:
                 st.dataframe(
-                    pd.DataFrame(rul_rows)
-                    .sort_values("RUL_cycles")
-                    .head(20),
+                    pd.DataFrame(rul_rows).sort_values("RUL_cycles").head(20),
                     use_container_width=True,
                 )
             else:
                 st.info(
-                    "Could not compute RUL with this simple trend model (maybe SOH is not decreasing enough yet)."
+                    "Could not compute RUL with this simple trend model (SOH not decreasing enough or too noisy)."
                 )
-
 
 # -----------------------------------------------------------------------------
 # 8. FORECASTING (TIME SERIES)
@@ -1869,4 +1877,5 @@ with tabs[11]:
     st.caption(
         "Tip: include this table and your app link in your GitHub README to fully satisfy the documentation part of the rubric."
     )
+
 
