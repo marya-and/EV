@@ -372,7 +372,6 @@ def clean_and_integrate(per_cycle_sources, cell_metadata, env_profile):
         d["bucket"] = d["bucket"].astype("category")
         if "cycle" in d.columns:
             d["cycle"] = d["cycle"].astype(int)
-        d, n_before2 = d, n_before  # keep for explanation if wanted
         cleaned_sources[name] = d
 
     combined = pd.concat(cleaned_sources.values(), ignore_index=True)
@@ -1179,7 +1178,8 @@ with tabs[5]:
                     random_state=7,
                 )
             if use_xgb and XGB_OK:
-                advanced_models["XGBoostRegressor"] = xgb.XGBoostRegressor(
+                # FIXED: use XGBRegressor instead of non-existent XGBoostRegressor
+                advanced_models["XGBRegressor (XGBoost)"] = xgb.XGBRegressor(
                     n_estimators=300,
                     learning_rate=0.05,
                     max_depth=4,
@@ -1198,7 +1198,8 @@ with tabs[5]:
                     random_state=7,
                 )
             if use_xgb and XGB_OK:
-                advanced_models["XGBoostClassifier"] = xgb.XGBClassifier(
+                # FIXED: use XGBClassifier instead of non-existent XGBoostClassifier
+                advanced_models["XGBClassifier (XGBoost)"] = xgb.XGBClassifier(
                     n_estimators=300,
                     learning_rate=0.05,
                     max_depth=4,
