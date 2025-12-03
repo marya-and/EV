@@ -9,10 +9,8 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
-from sklearn.model_selection import train_test_split, RandomizedSearchCV, GroupKFold
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
@@ -23,7 +21,6 @@ from sklearn.metrics import (
     mean_absolute_error,
     r2_score,
     accuracy_score,
-    classification_report,
 )
 from sklearn.ensemble import (
     RandomForestRegressor,
@@ -130,6 +127,35 @@ def explain(title: str, bullets):
             st.write(f"- {b}")
 
 
+def numeric_cols(df: pd.DataFrame):
+    return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+
+def corr_heatmap(df: pd.DataFrame, title: str, key: str):
+    cols = [c for c in numeric_cols(df) if df[c].notna().sum() > 10]
+    if len(cols) < 2:
+        st.info("Need at least two numeric columns with enough data.")
+        return
+    C = df[cols].corr()
+    fig = px.imshow(
+        C,
+        text_auto=".2f",
+        aspect="auto",
+        color_continuous_scale="RdBu_r",
+        zmin=-1,
+        zmax=1,
+        template=PLOTLY_TEMPLATE,
+        title=title,
+    )
+    st.plotly_chart(fig, use_container_width=True, key=key)
+
+
+def pct_missing(df: pd.DataFrame) -> float:
+    if df.size == 0:
+        return 0.0
+    return 100.0 * df.isna().mean().mean()
+
+
 # ------------------------------------------------------------------
 # SYNTHETIC EV DATA (3 DATASETS WITH MISSINGNESS)
 # ------------------------------------------------------------------
@@ -225,6 +251,7 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
     df["bucket"] = df["soh"].apply(bucket)
 
     # MCAR missingness
+    rng = np.random.default_rng(seed + 123)
     m_mcar_q = rng.random(len(df)) < 0.06
     df.loc[m_mcar_q, "q_abs"] = np.nan
 
@@ -267,35 +294,6 @@ def clean_data(df: pd.DataFrame):
             d[col] = d[col].astype("category")
 
     return d, n_before, n_after
-
-
-def numeric_cols(df: pd.DataFrame):
-    return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-
-
-def corr_heatmap(df: pd.DataFrame, title: str, key: str):
-    cols = [c for c in numeric_cols(df) if df[c].notna().sum() > 10]
-    if len(cols) < 2:
-        st.info("Need at least two numeric columns with enough data.")
-        return
-    C = df[cols].corr()
-    fig = px.imshow(
-        C,
-        text_auto=".2f",
-        aspect="auto",
-        color_continuous_scale="RdBu_r",
-        zmin=-1,
-        zmax=1,
-        template=PLOTLY_TEMPLATE,
-        title=title,
-    )
-    st.plotly_chart(fig, use_container_width=True, key=key)
-
-
-def pct_missing(df: pd.DataFrame) -> float:
-    if df.size == 0:
-        return 0.0
-    return 100.0 * df.isna().mean().mean()
 
 
 # ------------------------------------------------------------------
@@ -352,7 +350,7 @@ tabs = st.tabs(
         "📊 EDA Gallery",
         "🧩 Missingness & Imputation",
         "🔁 Encoding & Models",
-        "⏱ Time‑Series & Forecast",
+        "⏱ Time-Series & Forecast",
         "🌍 Insights & Story",
         "💾 Export",
     ]
@@ -365,7 +363,7 @@ with tabs[0]:
     explain(
         "Summary dashboard",
         [
-            "High‑level KPIs for the selected dataset(s).",
+            "High-level KPIs for the selected dataset(s).",
             "SOH curves, energy throughput, bucket distribution, and missingness.",
         ],
     )
@@ -491,82 +489,44 @@ with tabs[2]:
         ],
     )
 
-    st.markdown("### Distributions of key numeric features")
-    num_cols = [c for c in numeric_cols(current_df) if c not in ["cycle"]]
-    if num_cols:
-        n = min(len(num_cols), 4)
-        top_num = num_cols[:n]
-
-        # dynamic grid to avoid subplot_titles mismatch
-        if n == 1:
-            rows, cols = 1, 1
-        elif n == 2:
-            rows, cols = 1, 2
-        else:  # 3 or 4
-            rows, cols = 2, 2
-
-        total_slots = rows * cols
-        titles = top_num + [""] * (total_slots - len(top_num))
-
-        fig = make_subplots(rows=rows, cols=cols, subplot_titles=titles)
-        positions = []
-        for r in range(rows):
-            for c in range(cols):
-                positions.append((r + 1, c + 1))
-
-        for i, col in enumerate(top_num):
-            row, col_pos = positions[i]
-            fig.add_trace(
-                go.Histogram(
-                    x=current_df[col],
-                    name=col,
-                    marker_color="#1abc9c",
-                    opacity=0.7,
-                ),
-                row=row,
-                col=col_pos,
+    st.markdown("### Histograms of key numeric features")
+    numc = [c for c in numeric_cols(current_df) if c not in ["cycle"]]
+    if numc:
+        for col in numc[:4]:
+            st.write(f"**Histogram of {col}**")
+            fig = px.histogram(
+                current_df,
+                x=col,
+                nbins=30,
+                template=PLOTLY_TEMPLATE,
             )
-        fig.update_layout(
-            template=PLOTLY_TEMPLATE,
-            showlegend=False,
-            height=550,
-            title_text="Histograms of selected numeric features",
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
 
-        st.markdown("### Box plots for outlier inspection")
-        fig2 = make_subplots(
-            rows=1, cols=len(top_num), subplot_titles=top_num, shared_y=True
-        )
-        for i, col in enumerate(top_num):
-            fig2.add_trace(
-                go.Box(
-                    y=current_df[col],
-                    name=col,
-                    marker_color="#e67e22",
-                ),
-                row=1,
-                col=i + 1,
-            )
-        fig2.update_layout(
+    st.markdown("### Box plots for outlier inspection")
+    if numc:
+        # melt to long for a single box plot figure
+        box_df = current_df[numc[:4]].melt(var_name="feature", value_name="value")
+        fig_box = px.box(
+            box_df,
+            x="feature",
+            y="value",
             template=PLOTLY_TEMPLATE,
-            height=400,
-            showlegend=False,
-            title_text="Box plots",
+            title="Box plots for selected numeric features",
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig_box, use_container_width=True)
+    else:
+        st.info("No numeric columns available for box plots.")
 
     st.markdown("### Correlation matrix")
     corr_heatmap(current_df, "Correlation heatmap (numeric features)", key="eda_corr")
 
-    st.markdown("### Scatter plots")
-    scatter_cols = [c for c in numeric_cols(current_df) if c not in ["cycle"]]
-    if len(scatter_cols) >= 2:
+    st.markdown("### Scatter plot")
+    if len(numc) >= 2:
         c1, c2 = st.columns(2)
         with c1:
-            x_axis = st.selectbox("X-axis", scatter_cols, index=0, key="scatter_x")
+            x_axis = st.selectbox("X-axis", numc, index=0, key="scatter_x")
         with c2:
-            y_axis = st.selectbox("Y-axis", scatter_cols, index=1, key="scatter_y")
+            y_axis = st.selectbox("Y-axis", numc, index=1, key="scatter_y")
 
         color_by = st.selectbox(
             "Color by",
@@ -599,41 +559,44 @@ with tabs[3]:
 
     numc = numeric_cols(current_df)
     st.markdown("### Missing values summary")
-    miss_cnt = current_df[numc].isna().sum()
-    miss_pct = current_df[numc].isna().mean() * 100
-    miss_df = pd.DataFrame(
-        {"missing_count": miss_cnt, "missing_pct": miss_pct}
-    ).sort_values("missing_pct", ascending=False)
-    st.dataframe(miss_df, use_container_width=True)
+    if numc:
+        miss_cnt = current_df[numc].isna().sum()
+        miss_pct = current_df[numc].isna().mean() * 100
+        miss_df = pd.DataFrame(
+            {"missing_count": miss_cnt, "missing_pct": miss_pct}
+        ).sort_values("missing_pct", ascending=False)
+        st.dataframe(miss_df, use_container_width=True)
 
-    st.markdown("#### Missingness bar chart")
-    miss_nonzero = miss_df[miss_df["missing_count"] > 0]
-    if not miss_nonzero.empty:
-        fig = px.bar(
-            miss_nonzero.reset_index().rename(columns={"index": "column"}),
-            x="column",
-            y="missing_pct",
-            template=PLOTLY_TEMPLATE,
-            title="Percent missing by column",
-            height=350,
-        )
-        fig.update_layout(xaxis_tickangle=45)
-        st.plotly_chart(fig, use_container_width=True)
+        st.markdown("#### Missingness bar chart")
+        miss_nonzero = miss_df[miss_df["missing_count"] > 0]
+        if not miss_nonzero.empty:
+            fig = px.bar(
+                miss_nonzero.reset_index().rename(columns={"index": "column"}),
+                x="column",
+                y="missing_pct",
+                template=PLOTLY_TEMPLATE,
+                title="Percent missing by column",
+                height=350,
+            )
+            fig.update_layout(xaxis_tickangle=45)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No missing values in numeric columns.")
+
+        st.markdown("#### Missingness heatmap (rows × columns)")
+        miss_matrix = current_df[numc].isna().astype(int)
+        if not miss_matrix.empty:
+            fig_hm = px.imshow(
+                miss_matrix.transpose(),
+                aspect="auto",
+                color_continuous_scale="Viridis",
+                template=PLOTLY_TEMPLATE,
+                labels=dict(color="Missing"),
+                title="Missingness heatmap (1=missing)",
+            )
+            st.plotly_chart(fig_hm, use_container_width=True)
     else:
-        st.info("No missing values in numeric columns.")
-
-    st.markdown("#### Missingness heatmap (rows × columns)")
-    miss_matrix = current_df[numc].isna().astype(int)
-    if not miss_matrix.empty:
-        fig_hm = px.imshow(
-            miss_matrix.transpose(),
-            aspect="auto",
-            color_continuous_scale="Viridis",
-            template=PLOTLY_TEMPLATE,
-            labels=dict(color="Missing"),
-            title="Missingness heatmap (1=missing)",
-        )
-        st.plotly_chart(fig_hm, use_container_width=True)
+        st.info("No numeric columns, so missingness lab is trivial.")
 
     # imputation comparison
     st.markdown("---")
@@ -686,7 +649,6 @@ with tabs[3]:
             title=f"Imputation RMSE for {target_col}",
         )
         st.plotly_chart(fig_imp, use_container_width=True)
-
 
 # ------------------------------------------------------------------
 # ENCODING HELPERS
@@ -905,8 +867,8 @@ with tabs[4]:
         st.markdown("### 🔁 After encoding (design matrix)")
         st.dataframe(encoded_train_df.head(10), use_container_width=True)
         st.caption(
-            "After encoding: numeric → imputed + standardised, categorical → one‑hot 0/1, "
-            "text (usage_text) → TF‑IDF `text_*` features."
+            "After encoding: numeric → imputed + standardised, categorical → one-hot 0/1, "
+            "text (usage_text) → TF-IDF `text_*` features."
         )
 
         st.markdown("### 🧬 Encoding map (raw → encoded)")
@@ -1037,7 +999,7 @@ with tabs[4]:
 
         st.caption(
             "RandomizedSearchCV with n_jobs=-1 shows parallel hyperparameter search "
-            "(high‑performance computing)."
+            "(high-performance computing)."
         )
 
         # Simple RUL estimate for regression target
@@ -1133,36 +1095,13 @@ with tabs[5]:
                 forecast = model.predict(start=len(s_train), end=len(s_train) + steps - 1)
                 cyc_future = np.arange(c_train[-1] + 1, c_train[-1] + 1 + steps)
 
-                fig = go.Figure()
-                fig.add_trace(
-                    go.Scatter(
-                        x=c_train,
-                        y=s_train,
-                        mode="lines+markers",
-                        name="Observed SOH",
-                    )
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=cyc_future,
-                        y=forecast,
-                        mode="lines+markers",
-                        name="Forecast SOH",
-                    )
-                )
-                fig.add_hline(
-                    y=EOL_THRESH,
-                    line_dash="dot",
-                    line_color="red",
-                    annotation_text="EOL",
-                )
-                fig.update_layout(
-                    template=PLOTLY_TEMPLATE,
-                    height=450,
+                fig = px.line(
+                    x=c_train, y=s_train, template=PLOTLY_TEMPLATE,
+                    labels={"x": "Cycle", "y": "SOH"},
                     title=f"AutoReg forecast for cell {sel_cell}",
-                    xaxis_title="Cycle",
-                    yaxis_title="SOH",
                 )
+                fig.add_scatter(x=cyc_future, y=forecast, mode="lines+markers", name="Forecast")
+                fig.add_hline(y=EOL_THRESH, line_dash="dot", line_color="red", annotation_text="EOL")
                 st.plotly_chart(fig, use_container_width=True)
 
 # ------------------------------------------------------------------
