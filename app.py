@@ -485,7 +485,7 @@ with tabs[2]:
         "EDA gallery",
         [
             "Multiple visualisations: histograms, boxplots, correlations, scatter.",
-            "Mirrors the rich penguins EDA but for EV battery data.",
+            "Adapts the penguins EDA pattern to EV battery data.",
         ],
     )
 
@@ -504,7 +504,6 @@ with tabs[2]:
 
     st.markdown("### Box plots for outlier inspection")
     if numc:
-        # melt to long for a single box plot figure
         box_df = current_df[numc[:4]].melt(var_name="feature", value_name="value")
         fig_box = px.box(
             box_df,
@@ -857,8 +856,8 @@ with tabs[4]:
             if c in dfy.columns
         ]
         show_cols += extra
-        show_cols = [c for c in show_cols if c in dfy.columns]
-        st.dataframe(train_struct[show_cols].head(10), use_container_width=True)
+        show_cols = [c for c in show_cols if c in dfy.columns]  # ✅ guard
+        st.dataframe(dfy[show_cols].head(10), use_container_width=True)
         st.caption(
             "Above: original features, including numeric (q_abs, e_abs, temperatures, voltages), "
             "categorical (dataset, cell_id, bucket) and text (usage_text, not shown here)."
