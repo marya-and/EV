@@ -1,1275 +1,486 @@
-# app.py
-# Robust EV Battery SOH & RUL:
-# A Missing-Data–Aware, Multi-Dataset Analytics & Visualization Framework
-
-from __future__ import annotations
-
-import numpy as np
-import pandas as pd
 import streamlit as st
-import matplotlib.pyplot as plt
 import seaborn as sns
+import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
 
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.impute import SimpleImputer, KNNImputer
-from sklearn.experimental import enable_iterative_imputer  # noqa: F401
-from sklearn.impute import IterativeImputer
-from sklearn.metrics import (
-    mean_absolute_error,
-    r2_score,
-    accuracy_score,
-)
-from sklearn.ensemble import (
-    RandomForestRegressor,
-    RandomForestClassifier,
-    GradientBoostingRegressor,
-    GradientBoostingClassifier,
-)
-from sklearn.neural_network import MLPRegressor, MLPClassifier
-from sklearn.feature_extraction.text import TfidfVectorizer
-from joblib import Parallel, delayed
+# Page configuration
+st.set_page_config(page_title="Penguins Dataset Analysis", layout="wide")
 
-# Optional libs
-try:
-    from statsmodels.tsa.ar_model import AutoReg
-    STATS_OK = True
-except Exception:
-    STATS_OK = False
+# Title
+st.title("🐧 Penguins Dataset - IDA & EDA")
+st.markdown("**Initial Data Analysis and Exploratory Data Analysis**")
 
-try:
-    import xgboost as xgb
-    XGB_OK = True
-except Exception:
-    XGB_OK = False
-
-
-# -------------------------------------------------------------------
-# PAGE CONFIG & THEME
-# -------------------------------------------------------------------
-st.set_page_config(
-    page_title="Robust EV Battery SOH & RUL",
-    page_icon="🔋",
-    layout="wide",
-)
-
-DARK_CSS = """
-<style>
-[data-testid="stAppViewContainer"] {
-    background-color: #050816;
-    color: #f5f5f5;
-}
-[data-testid="stSidebar"] {
-    background-color: #0b1020;
-}
-h1, h2, h3, h4, h5, h6 {
-    color: #ffffff;
-}
-.kpi-box {
-    border-radius: 10px;
-    padding: 10px 12px;
-    background: linear-gradient(145deg,#101522,#181f33);
-    border: 1px solid #252b40;
-}
-.kpi-label {
-    font-size: 0.8rem;
-    opacity: 0.8;
-}
-.kpi-value {
-    font-size: 1.4rem;
-    font-weight: 800;
-}
-.kpi-sub {
-    font-size: 0.75rem;
-    opacity: 0.7;
-}
-</style>
-"""
-st.markdown(DARK_CSS, unsafe_allow_html=True)
-
-PLOTLY_TEMPLATE = "plotly_dark"
-EOL_THRESH = 0.80  # End-of-life threshold for SOH
-MIN_LABELS_TRAIN = 40
-
-
-def kpi(label, value, sub=""):
-    if isinstance(value, float):
-        vtxt = f"{value:,.3f}"
-    elif isinstance(value, (int, np.integer)):
-        vtxt = f"{value:,}"
-    else:
-        vtxt = str(value)
-    html = f"""
-    <div class="kpi-box">
-      <div class="kpi-label">{label}</div>
-      <div class="kpi-value">{vtxt}</div>
-      <div class="kpi-sub">{sub}</div>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
-
-
-def explain(title: str, bullets):
-    with st.expander(f"ℹ️ What this tab shows — {title}", expanded=False):
-        for b in bullets:
-            st.write(f"- {b}")
-
-
-def numeric_cols(df: pd.DataFrame):
-    return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
-
-
-def corr_heatmap(df: pd.DataFrame, title: str, key: str):
-    cols = [c for c in numeric_cols(df) if df[c].notna().sum() > 10]
-    if len(cols) < 2:
-        st.info("Need at least two numeric columns with enough data.")
-        return
-    C = df[cols].corr()
-    fig = px.imshow(
-        C,
-        text_auto=".2f",
-        aspect="auto",
-        color_continuous_scale="RdBu_r",
-        zmin=-1,
-        zmax=1,
-        template=PLOTLY_TEMPLATE,
-        title=title,
-    )
-    st.plotly_chart(fig, use_container_width=True, key=key)
-
-
-def pct_missing(df: pd.DataFrame) -> float:
-    if df.size == 0:
-        return 0.0
-    return 100.0 * df.isna().mean().mean()
-
-
-# -------------------------------------------------------------------
-# SYNTHETIC EV DATA (3+ DATASETS WITH MISSINGNESS)
-# -------------------------------------------------------------------
+# Load dataset
 @st.cache_data
-def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) -> pd.DataFrame:
-    """
-    Generate a synthetic EV dataset for one usage profile:
-    - Urban / Highway / Mixed
-    - Includes SOH, capacity, currents, voltages, temperatures, and text.
-    - Injects MCAR and MAR missingness.
-    """
-    rng = np.random.default_rng(seed)
-    rows = []
+def load_data():
+    return sns.load_dataset('penguins')
 
-    params = {
-        "Urban": dict(deg_rate=0.0010, temp0=30.0, temp_slope=0.03, c_rate=0.9, ambient=30),
-        "Highway": dict(deg_rate=0.0006, temp0=25.0, temp_slope=0.02, c_rate=1.3, ambient=24),
-        "Mixed": dict(deg_rate=0.0008, temp0=27.0, temp_slope=0.025, c_rate=1.1, ambient=27),
-    }
-    p = params.get(profile, params["Urban"])
+df = load_data()
 
-    usage_templates = {
-        "Urban": [
-            "urban stop-and-go traffic",
-            "frequent short trips with AC",
-            "dense city driving with regen braking",
-        ],
-        "Highway": [
-            "long constant-speed highway commute",
-            "high-speed freeway with moderate hills",
-            "intercity highway travel",
-        ],
-        "Mixed": [
-            "mixed city and highway usage",
-            "suburban commute with occasional highway",
-            "balanced driving patterns",
-        ],
-    }
-
-    for cell_idx in range(n_cells):
-        cell_id = f"{profile[:3].upper()}_{cell_idx+1:02d}"
-        cap0 = rng.normal(2.6, 0.04)
-
-        for cyc in range(n_cycles):
-            deg = p["deg_rate"]
-            # underlying SOH trend
-            soh_mean = 1.0 - deg * cyc + rng.normal(0, 0.002)
-            soh = float(np.clip(soh_mean, 0.6, 1.03))
-            cap = cap0 * soh
-
-            q_abs = rng.normal(0.30 + 0.005 * cyc, 0.04)
-            q_abs = float(max(q_abs, 0.05))
-
-            v_nom = 4.15 - 0.04 * (1 - soh)
-            v_mean = rng.normal(v_nom, 0.015)
-            v_std = abs(rng.normal(0.08 + 0.02 * (1 - soh), 0.01))
-
-            e_abs = q_abs * v_mean + rng.normal(0, 0.05)
-
-            temp_mean = rng.normal(p["temp0"] + p["temp_slope"] * cyc, 3.0)
-            temp_max = temp_mean + abs(rng.normal(3.0, 1.0))
-
-            curr_rms = rng.normal(p["c_rate"], 0.15)
-            ambient = rng.normal(p["ambient"], 2.0)
-
-            usage_text = rng.choice(usage_templates[profile])
-
-            rows.append(
-                dict(
-                    dataset=profile,
-                    cell_id=cell_id,
-                    cycle=cyc,
-                    soh=soh,
-                    cap_ah=cap,
-                    q_abs=q_abs,
-                    e_abs=e_abs,
-                    temp_mean=temp_mean,
-                    temp_max=temp_max,
-                    v_mean=v_mean,
-                    v_std=v_std,
-                    current_rms=curr_rms,
-                    ambient_temp=ambient,
-                    usage_text=usage_text,
-                )
-            )
-
-    df = pd.DataFrame(rows)
-
-    def bucket(soh):
-        if pd.isna(soh):
-            return "Missing"
-        if soh >= 0.9:
-            return "Healthy"
-        if soh >= 0.85:
-            return "Monitor"
-        if soh >= EOL_THRESH:
-            return "Aging"
-        return "EOL"
-
-    df["bucket"] = df["soh"].apply(bucket)
-
-    # Inject MCAR + MAR missingness
-    rng = np.random.default_rng(seed + 123)
-    m_mcar_q = rng.random(len(df)) < 0.06
-    df.loc[m_mcar_q, "q_abs"] = np.nan
-
-    m_mcar_v = rng.random(len(df)) < 0.04
-    df.loc[m_mcar_v, "v_std"] = np.nan
-
-    high_temp = df["temp_max"] > (p["temp0"] + 12)
-    mar_mask = high_temp & (rng.random(len(df)) < 0.35)
-    df.loc[mar_mask, ["soh", "cap_ah"]] = np.nan
-
-    dup_rows = df.sample(40, random_state=seed)
-    df = pd.concat([df, dup_rows], ignore_index=True)
-
-    return df
-
-
-@st.cache_data
-def get_all_datasets():
-    urban = generate_ev_dataset("Urban", seed=0)
-    highway = generate_ev_dataset("Highway", seed=1)
-    mixed = generate_ev_dataset("Mixed", seed=2)
-    return {"Urban": urban, "Highway": highway, "Mixed": mixed}
-
-
-def clean_data(df: pd.DataFrame):
-    d = df.copy()
-    n_before = len(d)
-    d = d.drop_duplicates()
-    n_after = len(d)
-
-    if "temp_mean" in d.columns:
-        d["temp_mean"] = d["temp_mean"].clip(-20, 90)
-    if "temp_max" in d.columns:
-        d["temp_max"] = d["temp_max"].clip(-20, 120)
-
-    for col in ["dataset", "cell_id", "bucket"]:
-        if col in d.columns:
-            d[col] = d[col].astype("category")
-
-    return d, n_before, n_after
-
-
-# -------------------------------------------------------------------
-# SIDEBAR CONTROLS
-# -------------------------------------------------------------------
-all_datasets = get_all_datasets()
-st.sidebar.title("Controls")
-
-ds_names = list(all_datasets.keys())
-selected_sources = st.sidebar.multiselect(
-    "Select dataset(s)",
-    ds_names,
-    default=ds_names,
-    help="Analyse one source, multiple sources, or all combined.",
-)
-if not selected_sources:
-    selected_sources = ds_names
-
-impute_choice = st.sidebar.selectbox(
-    "Imputation method (for modelling)",
-    ["Simple (median)", "KNN (k=5)", "Iterative (MICE)"],
-)
-task_type = st.sidebar.radio("Modelling task", ["SOH regression", "Bucket classification"])
-
-use_mlp = st.sidebar.checkbox("Include MLP (neural network)", value=True)
-use_xgb = st.sidebar.checkbox("Include XGBoost model (if installed)", value=XGB_OK)
-
-st.sidebar.markdown("---")
-EOL_THRESH = st.sidebar.slider("EOL threshold (SOH)", 0.6, 0.95, 0.8, 0.01)
-MIN_LABELS_TRAIN = st.sidebar.slider("Min labelled rows to train", 20, 200, 40, 5)
-
-# -------------------------------------------------------------------
-# BUILD COMBINED DATASET
-# -------------------------------------------------------------------
-cleaned_sources = {}
-raw_sources = {}
-for name in ds_names:
-    raw = all_datasets[name]
-    clean, n_before, n_after = clean_data(raw)
-    raw_sources[name] = raw
-    cleaned_sources[name] = clean
-
-combined_raw = pd.concat([raw_sources[n] for n in selected_sources], ignore_index=True)
-combined_clean, n_before_combined, n_after_combined = clean_data(combined_raw)
-current_df = combined_clean.copy()
-
-# -------------------------------------------------------------------
-# TABS
-# -------------------------------------------------------------------
-tabs = st.tabs(
-    [
-        "🏠 Summary",
-        "📦 Data Overview",
-        "📊 EDA & Comparison",
-        "🧩 Missingness & Imputation",
-        "🔁 Encoding & Models",
-        "⏱ Time-Series Forecast",
-        "🌍 Insights & Rubric",
-        "💾 Export",
-    ]
+# Sidebar
+st.sidebar.header("Navigation")
+analysis_type = st.sidebar.radio(
+    "Select Analysis:",
+    ["Dataset Overview", "Class Imbalance", "Missing Values", "Outliers", 
+     "Correlation Analysis", "Distribution Plots", "Scatter Plots"]
 )
 
-# -------------------------------------------------------------------
-# 1. SUMMARY
-# -------------------------------------------------------------------
-with tabs[0]:
-    explain(
-        "Summary dashboard",
-        [
-            "High-level KPIs for the selected dataset(s).",
-            "SOH curves, energy throughput, bucket distribution, and missingness.",
-        ],
+# Dataset Overview
+if analysis_type == "Dataset Overview":
+    st.header("📊 Dataset Overview")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Records", df.shape[0])
+    with col2:
+        st.metric("Total Features", df.shape[1])
+    with col3:
+        st.metric("Missing Values", df.isnull().sum().sum())
+    
+    st.subheader("First 10 Rows")
+    st.dataframe(df.head(10))
+    
+    st.subheader("Dataset Info")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**Data Types:**")
+        st.dataframe(pd.DataFrame({
+            'Column': df.dtypes.index,
+            'Type': df.dtypes.values
+        }))
+    
+    with col2:
+        st.write("**Statistical Summary:**")
+        st.dataframe(df.describe())
+
+# Class Imbalance
+elif analysis_type == "Class Imbalance":
+    st.header("⚖️ Class Imbalance Analysis")
+    
+    # Get categorical columns
+    categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    
+    # Selectbox to choose categorical variable
+    selected_cat = st.selectbox("Select Categorical Variable:", categorical_cols)
+    
+    st.subheader(f"{selected_cat.title()} Distribution")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        cat_counts = df[selected_cat].value_counts()
+        st.dataframe(pd.DataFrame({
+            selected_cat.title(): cat_counts.index,
+            'Count': cat_counts.values,
+            'Percentage': (cat_counts.values / len(df) * 100).round(2)
+        }))
+    
+    with col2:
+        # Interactive bar chart
+        fig = px.bar(
+            x=cat_counts.index,
+            y=cat_counts.values,
+            labels={'x': selected_cat.title(), 'y': 'Count'},
+            title=f'{selected_cat.title()} Distribution',
+            color=cat_counts.index,
+            text=cat_counts.values
+        )
+        fig.update_traces(textposition='outside')
+        fig.update_layout(showlegend=False, height=400)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Pie chart
+    st.subheader(f"{selected_cat.title()} Proportion")
+    fig = px.pie(
+        values=cat_counts.values,
+        names=cat_counts.index,
+        title=f'{selected_cat.title()} Proportion',
+        hole=0.3
     )
+    fig.update_traces(textposition='inside', textinfo='percent+label')
+    st.plotly_chart(fig, use_container_width=True)
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        kpi("Data sources selected", len(selected_sources), ", ".join(selected_sources))
-    with c2:
-        kpi("Unique cells", int(current_df["cell_id"].nunique()), "cell_id")
-    with c3:
-        kpi("Rows (after cleaning)", len(current_df), f"from {n_before_combined} raw")
-    with c4:
-        kpi("Avg % missing", f"{pct_missing(current_df):.1f}%", "across all columns")
-
-    st.markdown("### SOH and energy at a glance")
-    left, mid, right = st.columns([1.4, 1.1, 1.1])
-
-    with left:
-        df_plot = current_df.dropna(subset=["soh"]).copy()
-        if not df_plot.empty:
-            fig = px.line(
-                df_plot,
-                x="cycle",
-                y="soh",
-                color="cell_id",
-                facet_row="dataset",
-                template=PLOTLY_TEMPLATE,
-                height=350,
-                title="SOH vs cycle by cell and dataset",
+# Missing Values
+elif analysis_type == "Missing Values":
+    st.header("🔍 Missing Values Analysis")
+    
+    # Missing values summary
+    missing = df.isnull().sum()
+    missing_pct = (missing / len(df) * 100).round(2)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Missing Values Summary")
+        missing_df = pd.DataFrame({
+            'Column': missing.index,
+            'Missing Count': missing.values,
+            'Percentage': missing_pct.values
+        })
+        st.dataframe(missing_df)
+    
+    with col2:
+        st.subheader("Missing Values Bar Chart")
+        missing_filtered = missing[missing > 0]
+        if len(missing_filtered) > 0:
+            fig = px.bar(
+                x=missing_filtered.index,
+                y=missing_filtered.values,
+                labels={'x': 'Column', 'y': 'Missing Count'},
+                title='Missing Values by Column',
+                text=missing_filtered.values,
+                color=missing_filtered.values,
+                color_continuous_scale='Reds'
             )
-            fig.add_hline(
-                y=EOL_THRESH,
-                line_dash="dot",
-                line_color="red",
-                annotation_text="EOL threshold",
-            )
+            fig.update_traces(textposition='outside')
+            fig.update_layout(showlegend=False, height=400)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No SOH labels available for selected datasets.")
-
-    with mid:
-        if "e_abs" in current_df.columns:
-            g = (
-                current_df.groupby(["dataset", "cell_id"], as_index=False)["e_abs"]
-                .sum()
-                .sort_values("e_abs", ascending=False)
-            )
-            fig2 = px.bar(
-                g,
-                x="cell_id",
-                y="e_abs",
-                color="dataset",
-                template=PLOTLY_TEMPLATE,
-                title="Total energy throughput per cell",
-                height=350,
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-        else:
-            st.info("Feature e_abs not available.")
-
-    with right:
-        if "bucket" in current_df.columns:
-            counts = (
-                current_df["bucket"]
-                .value_counts(dropna=False)
-                .rename_axis("bucket")
-                .reset_index(name="count")
-            )
-            fig3 = px.pie(
-                counts,
-                values="count",
-                names="bucket",
-                hole=0.5,
-                template=PLOTLY_TEMPLATE,
-                title="Health bucket distribution",
-                height=350,
-            )
-            st.plotly_chart(fig3, use_container_width=True)
-        else:
-            st.info("Bucket labels not found.")
-
-# -------------------------------------------------------------------
-# 2. DATA OVERVIEW
-# -------------------------------------------------------------------
-with tabs[1]:
-    explain(
-        "Data overview",
-        [
-            "View combined dataset after cleaning.",
-            "Understand types, ranges and missingness per column.",
-            "See how different sources (Urban/Highway/Mixed) compare structurally.",
-        ],
+            st.info("No missing values found!")
+    
+    # Heatmap
+    st.subheader("Missing Values Heatmap")
+    missing_matrix = df.isnull().astype(int)
+    
+    fig = px.imshow(
+        missing_matrix.T,
+        labels=dict(x="Row Index", y="Column", color="Missing"),
+        y=df.columns,
+        color_continuous_scale='Viridis',
+        aspect='auto',
+        title='Missing Values Heatmap (Yellow = Missing)'
     )
+    fig.update_layout(height=500)
+    st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### Combined dataset (after basic cleaning)")
-    st.dataframe(current_df.head(20), use_container_width=True)
+# Outliers
+elif analysis_type == "Outliers":
+    st.header("📈 Outlier Detection")
+    
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    
+    st.subheader("Box Plots for Numerical Features")
+    
+    # Create interactive box plots
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=numeric_cols
+    )
+    
+    positions = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    
+    for i, col in enumerate(numeric_cols):
+        if i < len(positions):
+            row, col_pos = positions[i]
+            fig.add_trace(
+                go.Box(y=df[col], name=col, marker_color='#3498DB'),
+                row=row, col=col_pos
+            )
+    
+    fig.update_layout(height=700, showlegend=False, title_text="Box Plots for Outlier Detection")
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Outlier statistics
+    st.subheader("Outlier Statistics (IQR Method)")
+    
+    outlier_data = []
+    for col in numeric_cols:
+        Q1 = df[col].quantile(0.25)
+        Q3 = df[col].quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        outliers = df[(df[col] < lower_bound) | (df[col] > upper_bound)][col]
+        outlier_data.append({
+            'Feature': col,
+            'Outlier Count': len(outliers),
+            'Percentage': round(len(outliers) / len(df) * 100, 2)
+        })
+    
+    st.dataframe(pd.DataFrame(outlier_data))
 
-    st.markdown("#### Column info & summary statistics")
-    col1, col2 = st.columns([1.2, 1.4])
-
+# Correlation Analysis
+elif analysis_type == "Correlation Analysis":
+    st.header("🔗 Correlation Analysis")
+    
+    numeric_df = df.select_dtypes(include=[np.number])
+    
+    st.subheader("Correlation Matrix")
+    col1, col2 = st.columns([1, 2])
+    
     with col1:
-        dtype_df = pd.DataFrame(
-            {
-                "column": current_df.columns,
-                "dtype": [str(current_df[c].dtype) for c in current_df.columns],
-                "n_unique": [current_df[c].nunique(dropna=True) for c in current_df.columns],
-                "pct_missing": [100 * current_df[c].isna().mean() for c in current_df.columns],
-            }
-        )
-        st.dataframe(dtype_df, use_container_width=True)
-
+        st.dataframe(numeric_df.corr().round(3))
+    
     with col2:
-        st.dataframe(
-            current_df.describe(include="all").transpose(),
-            use_container_width=True,
+        corr_matrix = numeric_df.corr()
+        fig = px.imshow(
+            corr_matrix,
+            text_auto='.2f',
+            color_continuous_scale='RdBu_r',
+            color_continuous_midpoint=0,
+            labels=dict(color="Correlation"),
+            title='Correlation Heatmap',
+            aspect='auto'
         )
-
-    st.markdown("### Per-dataset summary")
-    per_ds = (
-        current_df.groupby("dataset")
-        .agg(
-            n_rows=("soh", "size"),
-            n_cells=("cell_id", "nunique"),
-            n_cycles=("cycle", "nunique"),
-            mean_soh=("soh", "mean"),
-            pct_missing=("soh", lambda s: 100 * s.isna().mean()),
-        )
-        .reset_index()
-    )
-    st.dataframe(per_ds, use_container_width=True)
-
-    fig_ds = px.bar(
-        per_ds,
-        x="dataset",
-        y="mean_soh",
-        template=PLOTLY_TEMPLATE,
-        title="Average SOH by dataset",
-    )
-    st.plotly_chart(fig_ds, use_container_width=True)
-
-# -------------------------------------------------------------------
-# 3. EDA & DATASET COMPARISON
-# -------------------------------------------------------------------
-with tabs[2]:
-    explain(
-        "EDA & Dataset comparison",
-        [
-            "Multiple visualisations: histograms, boxplots, correlations, scatter, violin.",
-            "Compare distributions and relationships across datasets.",
-        ],
-    )
-
-    st.markdown("### Histograms (by dataset)")
-    numc = [c for c in numeric_cols(current_df) if c not in ["cycle"]]
-    if numc:
-        col_hist = st.selectbox("Histogram feature", numc, index=numc.index("soh") if "soh" in numc else 0)
-        fig = px.histogram(
-            current_df,
-            x=col_hist,
-            color="dataset",
-            nbins=30,
-            template=PLOTLY_TEMPLATE,
-            barmode="overlay",
-        )
+        fig.update_layout(height=500)
         st.plotly_chart(fig, use_container_width=True)
+    
+    # Pairwise correlation
+    st.subheader("Strong Correlations (|r| > 0.5)")
+    corr_matrix = numeric_df.corr()
+    strong_corr = []
+    
+    for i in range(len(corr_matrix.columns)):
+        for j in range(i+1, len(corr_matrix.columns)):
+            if abs(corr_matrix.iloc[i, j]) > 0.5:
+                strong_corr.append({
+                    'Feature 1': corr_matrix.columns[i],
+                    'Feature 2': corr_matrix.columns[j],
+                    'Correlation': round(corr_matrix.iloc[i, j], 3)
+                })
+    
+    if strong_corr:
+        st.dataframe(pd.DataFrame(strong_corr))
+    else:
+        st.info("No strong correlations found (threshold: |r| > 0.5)")
 
-    st.markdown("### Box- and violin plots by dataset")
-    if numc:
-        col_box = st.selectbox("Box/violin feature", numc, index=numc.index("soh") if "soh" in numc else 0, key="box_feat")
-        fig_box = px.box(
-            current_df,
-            x="dataset",
-            y=col_box,
-            color="dataset",
-            template=PLOTLY_TEMPLATE,
-            title=f"Box plot of {col_box} by dataset",
+# Distribution Plots
+elif analysis_type == "Distribution Plots":
+    st.header("📊 Distribution Plots")
+    
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    
+    st.subheader("Histograms for Numerical Features")
+    
+    # Create interactive histograms
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=numeric_cols
+    )
+    
+    positions = [(1, 1), (1, 2), (2, 1), (2, 2)]
+    
+    for i, col in enumerate(numeric_cols):
+        if i < len(positions):
+            row, col_pos = positions[i]
+            fig.add_trace(
+                go.Histogram(x=df[col], name=col, marker_color='#9B59B6', opacity=0.7),
+                row=row, col=col_pos
+            )
+    
+    fig.update_layout(height=700, showlegend=False, title_text="Distribution of Numerical Features")
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Distribution by species
+    st.subheader("Distributions by Species")
+    
+    selected_feature = st.selectbox("Select a numerical feature:", numeric_cols)
+    
+    fig = px.histogram(
+        df,
+        x=selected_feature,
+        color='species',
+        marginal='box',
+        title=f'Distribution of {selected_feature} by Species',
+        labels={selected_feature: selected_feature},
+        barmode='overlay',
+        opacity=0.7
+    )
+    fig.update_layout(height=500)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Violin plot
+    st.subheader("Violin Plot by Species")
+    fig = px.violin(
+        df,
+        y=selected_feature,
+        x='species',
+        color='species',
+        box=True,
+        points='all',
+        title=f'{selected_feature} Distribution by Species (Violin Plot)'
+    )
+    fig.update_layout(height=500)
+    st.plotly_chart(fig, use_container_width=True)
+
+# Scatter Plots
+elif analysis_type == "Scatter Plots":
+    st.header("🎯 Scatter Plots")
+    
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        x_axis = st.selectbox("Select X-axis:", numeric_cols, index=0)
+    with col2:
+        y_axis = st.selectbox("Select Y-axis:", numeric_cols, index=1)
+    
+    color_by = st.selectbox("Color by:", ['species', 'sex', 'island', 'None'])
+    
+    # Interactive scatter plot
+    if color_by == 'None':
+        fig = px.scatter(
+            df,
+            x=x_axis,
+            y=y_axis,
+            title=f'{y_axis} vs {x_axis}',
+            opacity=0.7,
+            hover_data=df.columns
         )
-        st.plotly_chart(fig_box, use_container_width=True)
-
-        fig_violin = px.violin(
-            current_df,
-            x="dataset",
-            y=col_box,
-            color="dataset",
-            box=True,
-            points="all",
-            template=PLOTLY_TEMPLATE,
-            title=f"Violin plot of {col_box} by dataset",
-        )
-        st.plotly_chart(fig_violin, use_container_width=True)
-
-    st.markdown("### Correlation heatmap (numeric)")
-    corr_heatmap(current_df, "Correlation heatmap", key="eda_corr")
-
-    st.markdown("### Scatter plot")
-    if len(numc) >= 2:
-        c1, c2 = st.columns(2)
-        with c1:
-            x_axis = st.selectbox("X-axis", numc, index=0, key="scatter_x")
-        with c2:
-            y_axis = st.selectbox("Y-axis", numc, index=1, key="scatter_y")
-
-        color_by = st.selectbox(
-            "Color points by",
-            ["dataset", "cell_id", "bucket"],
-            index=0,
-        )
-        fig_sc = px.scatter(
-            current_df,
+    else:
+        fig = px.scatter(
+            df,
             x=x_axis,
             y=y_axis,
             color=color_by,
-            hover_data=["cycle", "cell_id"],
-            template=PLOTLY_TEMPLATE,
-            height=500,
+            title=f'{y_axis} vs {x_axis}',
+            opacity=0.7,
+            hover_data=df.columns
         )
-        st.plotly_chart(fig_sc, use_container_width=True)
-
-# -------------------------------------------------------------------
-# 4. MISSINGNESS & IMPUTATION
-# -------------------------------------------------------------------
-with tabs[3]:
-    explain(
-        "Missingness & Imputation",
-        [
-            "Quantify and visualise missing data.",
-            "Compare Simple / KNN / Iterative imputation RMSE.",
-            "Connects directly to MCAR/MAR ideas from lecture.",
-        ],
+    
+    fig.update_traces(marker=dict(size=10))
+    fig.update_layout(height=600)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # 3D Scatter plot
+    st.subheader("3D Scatter Plot")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        x_3d = st.selectbox("Select X-axis (3D):", numeric_cols, index=0, key='x3d')
+    with col2:
+        y_3d = st.selectbox("Select Y-axis (3D):", numeric_cols, index=1, key='y3d')
+    with col3:
+        z_3d = st.selectbox("Select Z-axis (3D):", numeric_cols, index=2, key='z3d')
+    
+    color_3d = st.selectbox("Color by (3D):", ['species', 'sex', 'island'], key='color3d')
+    
+    fig = px.scatter_3d(
+        df,
+        x=x_3d,
+        y=y_3d,
+        z=z_3d,
+        color=color_3d,
+        title=f'3D Scatter Plot: {x_3d} vs {y_3d} vs {z_3d}',
+        opacity=0.7,
+        hover_data=df.columns
     )
-
-    numc = numeric_cols(current_df)
-    st.markdown("### Missing values summary")
-    if numc:
-        miss_cnt = current_df[numc].isna().sum()
-        miss_pct = current_df[numc].isna().mean() * 100
-        miss_df = pd.DataFrame(
-            {"missing_count": miss_cnt, "missing_pct": miss_pct}
-        ).sort_values("missing_pct", ascending=False)
-        st.dataframe(miss_df, use_container_width=True)
-
-        st.markdown("#### Missingness bar chart")
-        miss_nonzero = miss_df[miss_df["missing_count"] > 0]
-        if not miss_nonzero.empty:
-            fig = px.bar(
-                miss_nonzero.reset_index().rename(columns={"index": "column"}),
-                x="column",
-                y="missing_pct",
-                template=PLOTLY_TEMPLATE,
-                title="Percent missing by column",
-                height=350,
+    fig.update_traces(marker=dict(size=5))
+    fig.update_layout(height=700)
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Scatter matrix
+    st.subheader("Scatter Matrix")
+    
+    categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    color_matrix = st.selectbox("Color by (Scatter Matrix):", categorical_cols + ['None'], key='color_matrix')
+    
+    if st.button("Generate Scatter Matrix"):
+        with st.spinner("Generating scatter matrix..."):
+            # Create figure with subplots
+            n_vars = len(numeric_cols)
+            fig = make_subplots(
+                rows=n_vars, 
+                cols=n_vars,
+                subplot_titles=[col if i == 0 else '' for i, col in enumerate(numeric_cols * n_vars)],
+                vertical_spacing=0.02,
+                horizontal_spacing=0.02
             )
-            fig.update_layout(xaxis_tickangle=45)
+            
+            # Get unique categories and colors
+            if color_matrix != 'None':
+                categories = df[color_matrix].dropna().unique()
+                colors_map = px.colors.qualitative.Plotly[:len(categories)]
+                color_discrete_map = {cat: colors_map[i] for i, cat in enumerate(categories)}
+            
+            # Create scatter plots and KDE plots
+            for i, col_y in enumerate(numeric_cols):
+                for j, col_x in enumerate(numeric_cols):
+                    row = i + 1
+                    col = j + 1
+                    
+                    # Diagonal: KDE plots
+                    if i == j:
+                        if color_matrix == 'None':
+                            # Single KDE
+                            data_clean = df[col_x].dropna()
+                            from scipy import stats
+                            density = stats.gaussian_kde(data_clean)
+                            xs = np.linspace(data_clean.min(), data_clean.max(), 200)
+                            ys = density(xs)
+                            
+                            fig.add_trace(
+                                go.Scatter(x=xs, y=ys, mode='lines', 
+                                          line=dict(color='#636EFA', width=2),
+                                          fill='tozeroy', fillcolor='rgba(99, 110, 250, 0.3)',
+                                          showlegend=False),
+                                row=row, col=col
+                            )
+                        else:
+                            # Multiple KDEs by category
+                            from scipy import stats
+                            for idx, cat in enumerate(categories):
+                                data_cat = df[df[color_matrix] == cat][col_x].dropna()
+                                if len(data_cat) > 1:
+                                    density = stats.gaussian_kde(data_cat)
+                                    xs = np.linspace(data_cat.min(), data_cat.max(), 200)
+                                    ys = density(xs)
+                                    
+                                    show_legend = (i == 0)  # Only show legend for first row
+                                    fig.add_trace(
+                                        go.Scatter(x=xs, y=ys, mode='lines',
+                                                  name=str(cat),
+                                                  line=dict(color=color_discrete_map[cat], width=2),
+                                                  fill='tozeroy', 
+                                                  fillcolor=color_discrete_map[cat].replace('rgb', 'rgba').replace(')', ', 0.3)'),
+                                                  showlegend=show_legend,
+                                                  legendgroup=str(cat)),
+                                        row=row, col=col
+                                    )
+                    
+                    # Off-diagonal: scatter plots
+                    else:
+                        if color_matrix == 'None':
+                            fig.add_trace(
+                                go.Scatter(x=df[col_x], y=df[col_y], mode='markers',
+                                          marker=dict(size=4, opacity=0.6),
+                                          showlegend=False),
+                                row=row, col=col
+                            )
+                        else:
+                            for idx, cat in enumerate(categories):
+                                data_cat = df[df[color_matrix] == cat]
+                                show_legend = (i == 0 and j == 1)  # Only show legend once
+                                fig.add_trace(
+                                    go.Scatter(x=data_cat[col_x], y=data_cat[col_y], 
+                                              mode='markers',
+                                              name=str(cat),
+                                              marker=dict(size=4, opacity=0.6, 
+                                                        color=color_discrete_map[cat]),
+                                              showlegend=show_legend,
+                                              legendgroup=str(cat)),
+                                    row=row, col=col
+                                )
+                    
+                    # Update axes labels
+                    fig.update_xaxes(title_text=col_x if i == n_vars - 1 else "", row=row, col=col)
+                    fig.update_yaxes(title_text=col_y if j == 0 else "", row=row, col=col)
+            
+            title_text = 'Scatter Matrix with KDE on Diagonal'
+            if color_matrix != 'None':
+                title_text += f' (colored by {color_matrix})'
+            
+            fig.update_layout(
+                height=800, 
+                width=800,
+                title_text=title_text,
+                showlegend=True
+            )
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No missing values in numeric columns.")
 
-        st.markdown("#### Missingness heatmap (rows × columns)")
-        miss_matrix = current_df[numc].isna().astype(int)
-        if not miss_matrix.empty:
-            fig_hm = px.imshow(
-                miss_matrix.transpose(),
-                aspect="auto",
-                color_continuous_scale="Viridis",
-                template=PLOTLY_TEMPLATE,
-                labels=dict(color="Missing"),
-                title="Missingness heatmap (1=missing)",
-            )
-            st.plotly_chart(fig_hm, use_container_width=True)
-    else:
-        st.info("No numeric columns, so missingness lab is trivial.")
-
-    # Imputation comparison
-    st.markdown("---")
-    st.markdown("### Imputation comparison for one column")
-
-    if numc:
-        target_col = st.selectbox(
-            "Numeric column with missing values",
-            numc,
-            index=min(1, len(numc) - 1),
-        )
-        base = current_df[target_col]
-
-        df_mcar = current_df.copy()
-        rng = np.random.default_rng(7)
-        idx = df_mcar.index.to_numpy()
-        mask_extra = rng.choice(idx, size=int(0.1 * len(idx)), replace=False)
-        df_mcar.loc[mask_extra, target_col] = np.nan
-
-        results = []
-        for label, imp in [
-            ("Simple (median)", SimpleImputer(strategy="median")),
-            ("KNN (k=5)", KNNImputer(n_neighbors=5)),
-            ("Iterative (MICE)", IterativeImputer(random_state=7, max_iter=10)),
-        ]:
-            X = df_mcar[numc]
-            imputed = imp.fit_transform(X)
-            Ximp = pd.DataFrame(imputed, columns=numc, index=X.index)
-
-            common = base.dropna()
-            if target_col in Ximp.columns:
-                rmse = float(
-                    np.sqrt(
-                        np.nanmean(
-                            (Ximp.loc[common.index, target_col] - common) ** 2
-                        )
-                    )
-                )
-            else:
-                rmse = np.nan
-            results.append({"imputer": label, "RMSE_vs_original": rmse})
-
-        res_df = pd.DataFrame(results).sort_values("RMSE_vs_original")
-        st.dataframe(res_df, use_container_width=True)
-        fig_imp = px.bar(
-            res_df,
-            x="imputer",
-            y="RMSE_vs_original",
-            template=PLOTLY_TEMPLATE,
-            title=f"Imputation RMSE for {target_col}",
-        )
-        st.plotly_chart(fig_imp, use_container_width=True)
-
-# -------------------------------------------------------------------
-# ENCODING HELPER
-# -------------------------------------------------------------------
-def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
-    dfy = df.dropna(subset=[target]).copy()
-    if dfy.empty:
-        return None
-
-    drop_cols = [target, "cap_ah"]
-    feature_cols = [c for c in dfy.columns if c not in drop_cols]
-
-    num_features = [
-        c for c in feature_cols if pd.api.types.is_numeric_dtype(dfy[c]) and c != "cycle"
-    ]
-    cat_features = [
-        c for c in feature_cols if dfy[c].dtype == "category" or dfy[c].dtype == "object"
-    ]
-    text_feature = "usage_text" if "usage_text" in cat_features else None
-    if text_feature and text_feature in cat_features:
-        cat_features = [c for c in cat_features if c != text_feature]
-
-    X_struct = dfy[feature_cols].copy()
-    y = dfy[target].copy()
-    if target == "bucket":
-        y = y.astype(str)
-
-    # train/test split
-    stratify = y if target == "bucket" and y.nunique() > 1 else None
-    X_train_struct, X_test_struct, y_train, y_test = train_test_split(
-        X_struct,
-        y,
-        test_size=0.3,
-        random_state=7,
-        stratify=stratify,
-    )
-
-    # text
-    if text_feature:
-        tfidf = TfidfVectorizer(max_features=80)
-        X_text_all = tfidf.fit_transform(X_struct[text_feature].fillna("").astype(str))
-        X_train_text = X_text_all[X_train_struct.index]
-        X_test_text = X_text_all[X_test_struct.index]
-    else:
-        tfidf = None
-        X_train_text = X_test_text = None
-
-    # numeric imputer
-    if imputer_name.startswith("Simple"):
-        num_imputer = SimpleImputer(strategy="median")
-    elif imputer_name.startswith("KNN"):
-        num_imputer = KNNImputer(n_neighbors=5)
-    else:
-        num_imputer = IterativeImputer(random_state=7, max_iter=15)
-
-    num_transformer = Pipeline(
-        steps=[
-            ("imputer", num_imputer),
-            ("scaler", StandardScaler()),
-        ]
-    )
-    cat_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("onehot", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
-        ]
-    )
-
-    transformers = []
-    if num_features:
-        transformers.append(("num", num_transformer, num_features))
-    if cat_features:
-        transformers.append(("cat", cat_transformer, cat_features))
-
-    preprocessor = ColumnTransformer(transformers=transformers)
-
-    X_train_struct_enc = preprocessor.fit_transform(X_train_struct)
-    X_test_struct_enc = preprocessor.transform(X_test_struct)
-
-    try:
-        enc_feature_names = preprocessor.get_feature_names_out()
-    except Exception:
-        enc_feature_names = [f"f_{i}" for i in range(X_train_struct_enc.shape[1])]
-
-    if X_train_text is not None:
-        X_tr = np.hstack([X_train_struct_enc, X_train_text.toarray()])
-        X_te = np.hstack([X_test_struct_enc, X_test_text.toarray()])
-        feature_names_full = list(enc_feature_names) + [
-            f"text_{i}" for i in range(X_train_text.shape[1])
-        ]
-    else:
-        X_tr = X_train_struct_enc
-        X_te = X_test_struct_enc
-        feature_names_full = list(enc_feature_names)
-
-    encoded_train_df = pd.DataFrame(
-        X_tr, columns=feature_names_full, index=X_train_struct.index
-    )
-
-    # encoding map
-    mapping_rows = []
-    for name in enc_feature_names:
-        if name.startswith("num__"):
-            raw_name = name.split("__", 1)[1]
-            mapping_rows.append(
-                dict(
-                    encoded_column=name,
-                    source_column=raw_name,
-                    encoding_type="numeric → impute+scale",
-                    category_value="—",
-                )
-            )
-        elif name.startswith("cat__"):
-            base = name.split("__", 1)[1]
-            if "_" in base:
-                src, cat_val = base.split("_", 1)
-            else:
-                src, cat_val = base, ""
-            mapping_rows.append(
-                dict(
-                    encoded_column=name,
-                    source_column=src,
-                    encoding_type="categorical → one-hot",
-                    category_value=cat_val,
-                )
-            )
-        else:
-            mapping_rows.append(
-                dict(
-                    encoded_column=name,
-                    source_column="(other)",
-                    encoding_type="other",
-                    category_value="",
-                )
-            )
-    encoding_map_df = pd.DataFrame(mapping_rows)
-
-    return dict(
-        X_tr=X_tr,
-        X_te=X_te,
-        y_train=y_train,
-        y_test=y_test,
-        preprocessor=preprocessor,
-        tfidf=tfidf,
-        feature_cols=feature_cols,
-        train_struct=X_train_struct,
-        encoded_train_df=encoded_train_df,
-        encoding_map_df=encoding_map_df,
-        dfy=dfy,
-    )
-
-
-# -------------------------------------------------------------------
-# 5. ENCODING & MODELS
-# -------------------------------------------------------------------
-with tabs[4]:
-    explain(
-        "Encoding & Models",
-        [
-            "Show raw features BEFORE encoding.",
-            "Show encoded design matrix AFTER encoding.",
-            "Show encoding map (raw column → encoded column).",
-            "Compare multiple models (RF, GB, MLP, optional XGB) on combined data and per dataset.",
-            "Demonstrate hyperparameter tuning and a simple RUL calculation.",
-        ],
-    )
-
-    target = "soh" if task_type == "SOH regression" else "bucket"
-    enc = build_encoded_matrices(current_df, target, impute_choice)
-
-    if enc is None or enc["dfy"].shape[0] < MIN_LABELS_TRAIN:
-        st.info(
-            f"Not enough labelled rows for target '{target}'. Need at least {MIN_LABELS_TRAIN}."
-        )
-    else:
-        dfy = enc["dfy"]
-        X_tr = enc["X_tr"]
-        X_te = enc["X_te"]
-        y_train = enc["y_train"]
-        y_test = enc["y_test"]
-        train_struct = enc["train_struct"]
-        encoded_train_df = enc["encoded_train_df"]
-        encoding_map_df = enc["encoding_map_df"]
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            kpi("Rows with label", len(dfy))
-        with c2:
-            kpi("Train rows", len(y_train))
-        with c3:
-            kpi("Test rows", len(y_test))
-
-        # BEFORE encoding
-        st.markdown("### 🔤 Before encoding (raw features)")
-        show_cols = ["dataset", "cell_id", "cycle", target]
-        extra = [
-            c
-            for c in [
-                "q_abs",
-                "e_abs",
-                "temp_mean",
-                "temp_max",
-                "v_mean",
-                "v_std",
-                "bucket",
-            ]
-            if c in dfy.columns
-        ]
-        show_cols += extra
-        show_cols = [c for c in show_cols if c in dfy.columns]
-        st.dataframe(dfy[show_cols].head(10), use_container_width=True)
-        st.caption(
-            "Original per-cycle features used for modelling: numeric (q_abs, e_abs, temperatures, voltages), "
-            "categorical (dataset, cell_id, bucket), and text (usage_text)."
-        )
-
-        # AFTER encoding
-        st.markdown("### 🔁 After encoding (design matrix)")
-        st.dataframe(encoded_train_df.head(10), use_container_width=True)
-        st.caption(
-            "After encoding: numeric → imputed + standardized, categorical → one-hot, "
-            "text → TF-IDF features. This is the matrix fed into the models."
-        )
-
-        # Encoding map
-        st.markdown("### 🧬 Encoding map (raw → encoded)")
-        st.dataframe(encoding_map_df, use_container_width=True)
-
-        # Models
-        st.markdown("---")
-        st.subheader(f"Model comparison (combined selected datasets) – target: {target}")
-
-        models = {}
-        if target == "soh":
-            models["RandomForest"] = RandomForestRegressor(
-                n_estimators=250,
-                max_depth=None,
-                random_state=7,
-                n_jobs=-1,
-            )
-            models["GradientBoosting"] = GradientBoostingRegressor(random_state=7)
-            if use_mlp:
-                models["MLP"] = MLPRegressor(
-                    hidden_layer_sizes=(64, 32),
-                    activation="relu",
-                    max_iter=400,
-                    alpha=1e-3,
-                    random_state=7,
-                )
-            if use_xgb and XGB_OK:
-                models["XGBoost"] = xgb.XGBRegressor(
-                    n_estimators=300,
-                    learning_rate=0.05,
-                    max_depth=4,
-                    subsample=0.9,
-                    colsample_bytree=0.9,
-                    random_state=7,
-                    n_jobs=-1,
-                )
-        else:
-            models["RandomForest"] = RandomForestClassifier(
-                n_estimators=250,
-                max_depth=None,
-                random_state=7,
-                n_jobs=-1,
-            )
-            models["GradientBoosting"] = GradientBoostingClassifier(random_state=7)
-            if use_mlp:
-                models["MLP"] = MLPClassifier(
-                    hidden_layer_sizes=(64, 32),
-                    activation="relu",
-                    max_iter=400,
-                    alpha=1e-3,
-                    random_state=7,
-                )
-
-        rows = []
-        fitted_models = {}
-        for name, model in models.items():
-            model.fit(X_tr, y_train)
-            y_pred = model.predict(X_te)
-            fitted_models[name] = model
-
-            if target == "soh":
-                mae = mean_absolute_error(y_test, y_pred)
-                r2 = r2_score(y_test, y_pred)
-                rows.append({"model": name, "MAE": mae, "R2": r2})
-            else:
-                acc = accuracy_score(y_test, y_pred)
-                rows.append({"model": name, "Accuracy": acc})
-
-        res_df = pd.DataFrame(rows)
-        st.dataframe(res_df, use_container_width=True)
-
-        if target == "soh":
-            fig_m = px.bar(
-                res_df,
-                x="model",
-                y="MAE",
-                color="R2",
-                template=PLOTLY_TEMPLATE,
-                title="SOH regression performance",
-            )
-            st.plotly_chart(fig_m, use_container_width=True)
-        else:
-            fig_m = px.bar(
-                res_df,
-                x="model",
-                y="Accuracy",
-                template=PLOTLY_TEMPLATE,
-                title="Bucket classification accuracy",
-            )
-            st.plotly_chart(fig_m, use_container_width=True)
-
-        # Per-dataset performance
-        st.markdown("### 📊 Per-dataset model performance")
-        perf_rows = []
-        for ds_name, gsub in dfy.groupby("dataset"):
-            enc_ds = build_encoded_matrices(gsub, target, impute_choice)
-            if enc_ds is None or enc_ds["dfy"].shape[0] < MIN_LABELS_TRAIN:
-                continue
-            X_tr_ds = enc_ds["X_tr"]
-            X_te_ds = enc_ds["X_te"]
-            y_tr_ds = enc_ds["y_train"]
-            y_te_ds = enc_ds["y_test"]
-
-            for name, model in models.items():
-                model.fit(X_tr_ds, y_tr_ds)
-                y_pred_ds = model.predict(X_te_ds)
-                if target == "soh":
-                    mae_ds = mean_absolute_error(y_te_ds, y_pred_ds)
-                    r2_ds = r2_score(y_te_ds, y_pred_ds)
-                    perf_rows.append(
-                        dict(dataset=ds_name, model=name, MAE=mae_ds, R2=r2_ds)
-                    )
-                else:
-                    acc_ds = accuracy_score(y_te_ds, y_pred_ds)
-                    perf_rows.append(
-                        dict(dataset=ds_name, model=name, Accuracy=acc_ds)
-                    )
-
-        if perf_rows:
-            perf_df = pd.DataFrame(perf_rows)
-            st.dataframe(perf_df, use_container_width=True)
-
-            if target == "soh":
-                fig_perf = px.bar(
-                    perf_df,
-                    x="model",
-                    y="MAE",
-                    color="dataset",
-                    barmode="group",
-                    template=PLOTLY_TEMPLATE,
-                    title="SOH model MAE by dataset",
-                )
-                st.plotly_chart(fig_perf, use_container_width=True)
-            else:
-                fig_perf = px.bar(
-                    perf_df,
-                    x="model",
-                    y="Accuracy",
-                    color="dataset",
-                    barmode="group",
-                    template=PLOTLY_TEMPLATE,
-                    title="Bucket model Accuracy by dataset",
-                )
-                st.plotly_chart(fig_perf, use_container_width=True)
-        else:
-            st.info("Not enough data per dataset to compute per-dataset metrics.")
-
-        # Hyperparameter tuning
-        st.markdown("### 🎛 Hyperparameter tuning (RandomizedSearchCV on RandomForest)")
-        if target == "soh":
-            base_rf = RandomForestRegressor(random_state=7, n_jobs=-1)
-            scoring = "neg_mean_absolute_error"
-        else:
-            base_rf = RandomForestClassifier(random_state=7, n_jobs=-1)
-            scoring = "accuracy"
-
-        param_dist = {
-            "n_estimators": [150, 250, 350],
-            "max_depth": [None, 6, 10],
-            "min_samples_leaf": [1, 2, 5],
-        }
-
-        search = RandomizedSearchCV(
-            base_rf,
-            param_distributions=param_dist,
-            n_iter=6,
-            cv=3,
-            scoring=scoring,
-            n_jobs=-1,
-            random_state=7,
-        )
-        search.fit(X_tr, y_train)
-        y_tuned = search.predict(X_te)
-
-        if target == "soh":
-            mae_tuned = mean_absolute_error(y_test, y_tuned)
-            r2_tuned = r2_score(y_test, y_tuned)
-            st.write(
-                f"Best params: `{search.best_params_}` — MAE={mae_tuned:.4f}, R²={r2_tuned:.3f}"
-            )
-        else:
-            acc_tuned = accuracy_score(y_test, y_tuned)
-            st.write(f"Best params: `{search.best_params_}` — Accuracy={acc_tuned:.3f}")
-
-        st.caption(
-            "RandomizedSearchCV with n_jobs=-1 demonstrates parallel hyperparameter search "
-            "(high-performance computing)."
-        )
-
-        # Simple RUL for regression
-        if target == "soh":
-            st.markdown("---")
-            st.subheader("🔮 Simple RUL estimate (Remaining Useful Life)")
-
-            best_row = res_df.sort_values("MAE").iloc[0]
-            best_name = best_row["model"]
-            best_model = models[best_name]
-
-            rul_rows = []
-            for cell, gcell in dfy.groupby("cell_id"):
-                gcell = gcell.sort_values("cycle")
-                Xc_struct = gcell[enc["feature_cols"]]
-                Xc_enc = enc["preprocessor"].transform(Xc_struct)
-                if enc["tfidf"] is not None and "usage_text" in Xc_struct.columns:
-                    Xt_cell = enc["tfidf"].transform(
-                        Xc_struct["usage_text"].fillna("").astype(str)
-                    )
-                    Xc = np.hstack([Xc_enc, Xt_cell.toarray()])
-                else:
-                    Xc = Xc_enc
-
-                soh_hat = best_model.predict(Xc)
-                cyc = gcell["cycle"].astype(int).values
-                if len(cyc) < 4:
-                    continue
-                m, b = np.polyfit(cyc, soh_hat, 1)
-                if m >= 0:
-                    continue
-                eol_cycle = int((EOL_THRESH - b) / m)
-                current_cycle = int(cyc.max())
-                rul = max(eol_cycle - current_cycle, 0)
-                rul_rows.append(
-                    dict(
-                        cell_id=cell,
-                        current_cycle=current_cycle,
-                        predicted_eol_cycle=eol_cycle,
-                        RUL_cycles=rul,
-                    )
-                )
-
-            if rul_rows:
-                st.dataframe(
-                    pd.DataFrame(rul_rows).sort_values("RUL_cycles"),
-                    use_container_width=True,
-                )
-            else:
-                st.info(
-                    "SOH trend not decreasing enough to estimate RUL reliably for these cells."
-                )
-
-# -------------------------------------------------------------------
-# 6. TIME-SERIES FORECAST
-# -------------------------------------------------------------------
-with tabs[5]:
-    explain(
-        "Time-series forecast",
-        [
-            "Treat SOH as a time-series and fit an AutoReg model (specialised time-series DS).",
-            "Shows how you could forecast future degradation trajectories.",
-        ],
-    )
-
-    if not STATS_OK:
-        st.info(
-            "statsmodels is not installed, so the AutoReg forecast demo is disabled. "
-            "Add `statsmodels` to requirements.txt to enable it."
-        )
-    else:
-        dfy = current_df.dropna(subset=["soh"]).copy()
-        if dfy.empty:
-            st.info("No SOH labels available for forecasting.")
-        else:
-            cell_options = sorted(dfy["cell_id"].astype(str).unique())
-            sel_cell = st.selectbox("Select cell for forecast", cell_options)
-            g = dfy[dfy["cell_id"].astype(str) == sel_cell].sort_values("cycle")
-            series = g["soh"].astype(float).values
-            cycles = g["cycle"].values
-
-            if len(series) < 20:
-                st.info("Need at least 20 points to fit an AutoReg model.")
-            else:
-                N = min(80, len(series))
-                s_train = series[-N:]
-                c_train = cycles[-N:]
-                model = AutoReg(s_train, lags=5, old_names=False).fit()
-                steps = 20
-                forecast = model.predict(start=len(s_train), end=len(s_train) + steps - 1)
-                cyc_future = np.arange(c_train[-1] + 1, c_train[-1] + 1 + steps)
-
-                fig = px.line(
-                    x=c_train,
-                    y=s_train,
-                    template=PLOTLY_TEMPLATE,
-                    labels={"x": "Cycle", "y": "SOH"},
-                    title=f"AutoReg forecast for cell {sel_cell}",
-                )
-                fig.add_scatter(x=cyc_future, y=forecast, mode="lines+markers", name="Forecast")
-                fig.add_hline(
-                    y=EOL_THRESH,
-                    line_dash="dot",
-                    line_color="red",
-                    annotation_text="EOL",
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-# -------------------------------------------------------------------
-# 7. INSIGHTS & RUBRIC
-# -------------------------------------------------------------------
-with tabs[6]:
-    explain(
-        "Insights & Rubric mapping",
-        [
-            "Narrative + real-world recommendations for EV fleets.",
-            "Rubric compliance table showing which requirement is satisfied where.",
-        ],
-    )
-
-    st.markdown("### Real-world insights")
-    st.write(
-        """
-        - **Temperature control**: High `temp_max` cycles accelerate degradation and are associated with more missing SOH measurements. 
-          Fleet operators should monitor thermal events and reduce exposure to very high pack temperatures.
-        - **Usage-dependent maintenance**: Urban profiles degrade faster than highway profiles, suggesting different 
-          maintenance intervals or warranty windows by usage class.
-        - **Missing data strategy**: Comparing Simple, KNN, and Iterative imputation shows that more 
-          sophisticated methods can reduce bias when data are MAR (Missing At Random).
-        - **Model choice & uncertainty**: Tree-based ensembles (RandomForest / GradientBoosting) provide strong 
-          baselines. MLP adds nonlinearity at the cost of interpretability. Using multiple models and comparing 
-          their errors gives a sense of uncertainty.
-        """
-    )
-
-    st.markdown("### Rubric compliance summary")
-    rubric_items = [
-        ("Data Collection & Prep", "3 synthetic datasets (Urban/Highway/Mixed), cleaned, typed, and merged"),
-        ("EDA & Visualizations", "Histograms, boxplots, correlations, scatter, violin, per-dataset comparison"),
-        ("Data Processing & Features", "Multiple imputers (Simple/KNN/MICE), standardization, bucket labels, TF-IDF text"),
-        ("Models (basic)", "RandomForest, GradientBoosting, MLP; regression + classification, metrics & tables"),
-        ("Streamlit App", "Multi-tab app, dataset selector, model toggles, explanations on each tab"),
-        ("GitHub", "Export CSV + clear schema for README/data dictionary"),
-        ("Advanced Models", "MLP neural net; optional XGBoost; RandomizedSearchCV tuning"),
-        ("Specialized DS", "Time-series AutoReg + text TF-IDF features"),
-        ("HPC", "RandomizedSearchCV with n_jobs=-1 for RF hyperparameter tuning"),
-        ("Real-world Impact", "Insights tab with maintenance/warranty recommendations"),
-        ("Exceptional Visualization", "Combined + per-dataset dashboards; health buckets; metric plots"),
-    ]
-    rubric_df = pd.DataFrame(rubric_items, columns=["Rubric item", "How this app addresses it"])
-    st.dataframe(rubric_df, use_container_width=True)
-
-# -------------------------------------------------------------------
-# 8. EXPORT
-# -------------------------------------------------------------------
-with tabs[7]:
-    explain(
-        "Export",
-        [
-            "Download cleaned per-cycle dataset for further analysis.",
-            "This CSV is what you would commit to GitHub as the main artifact.",
-        ],
-    )
-
-    st.markdown("### Download cleaned dataset (current selection)")
-    st.write(
-        f"Rows: **{len(current_df)}**, columns: **{len(current_df.columns)}**. "
-        f"Sources: **{', '.join(selected_sources)}**."
-    )
-    csv_bytes = current_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "⬇️ Download CSV",
-        data=csv_bytes,
-        file_name="ev_battery_cleaned.csv",
-        mime="text/csv",
-    )
-
-    st.caption(
-        "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
-    )
+# Footer
+st.sidebar.markdown("---")
+st.sidebar.info("Built with Streamlit, Seaborn, and Plotly")
