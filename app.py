@@ -16,13 +16,11 @@ import plotly.express as px
 
 import plotly.graph_objects as go          # ← this one is missing
 from plotly.subplots import make_subplots  # ← for the subplot histograms
-
-
-
-
-
-from sklearn.model_selection import GridSearchCV
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import GridSearchCV
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+
 
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.compose import ColumnTransformer
@@ -218,6 +216,41 @@ def limit_rows(df: pd.DataFrame, max_rows: int = 2500) -> pd.DataFrame:
     if len(df) <= max_rows:
         return df
     return df.sample(max_rows, random_state=7)
+
+
+
+#helper for rf tuning
+
+@st.cache_data(show_spinner=False)
+def run_rf_tuning(X_df: pd.DataFrame, y: np.ndarray):
+    """
+    Run a small GridSearchCV for RandomForestRegressor and return
+    a full cv_results_ DataFrame with positive MAE.
+    """
+    rf = RandomForestRegressor(
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    param_grid = {
+        "n_estimators": [50, 100, 200, 400],
+        "max_depth": [None, 5, 10, 20],
+    }
+
+    grid = GridSearchCV(
+        rf,
+        param_grid=param_grid,
+        cv=3,
+        scoring="neg_mean_absolute_error",
+        n_jobs=-1,
+        return_train_score=False,
+    )
+
+    grid.fit(X_df, y)
+
+    cvres = pd.DataFrame(grid.cv_results_)
+    cvres["mae"] = -cvres["mean_test_score"]  # convert from negative MAE
+    return cvres
 
 
 # -------------------------------------------------------------------
@@ -1831,99 +1864,104 @@ with tabs[5]:
                 )
 
         # RF HYPERPARAMETER TUNING
-         st.markdown("### RF hyperparameter tuning (RandomizedSearchCV, HPC)")
+         st.markdown("## 🔧 RandomForest hyperparameter tuning (automatic)")
 
-        if target == "soh":
-            rf_base = RandomForestRegressor(random_state=7)
-            param_dist = {
-                "n_estimators": [120, 200, 300],
-                "max_depth": [None, 6, 10],
-                "min_samples_split": [2, 5, 10],
-            }
-            scorer = "neg_mean_absolute_error"
-        else:
-            rf_base = RandomForestClassifier(random_state=7)
-            param_dist = {
-                "n_estimators": [120, 200, 300],
-                "max_depth": [None, 6, 10],
-                "min_samples_split": [2, 5, 10],
-            }
-            scorer = "accuracy"
+# We need a target column 'soh' and some numeric features
+if "soh" not in current_df.columns:
+    st.info("No 'soh' column found in the current dataset. RF regression can't be tuned.")
+else:
+    dfy = current_df.dropna(subset=["soh"]).copy()
+    num_cols = dfy.select_dtypes(include=[np.number]).columns.tolist()
 
-        search = RandomizedSearchCV(
-            rf_base,
-            param_distributions=param_dist,
-            n_iter=4,
-            scoring=scorer,
-            cv=3,
-            random_state=7,
-            n_jobs=-1,
+    # Remove target & any obvious indices from the feature set
+    feature_cols = [c for c in num_cols if c not in ["soh", "cycle", "time_s"]]
+
+    if len(dfy) < 40 or len(feature_cols) < 1:
+        st.info(
+            "Need at least ~40 labeled rows and at least one numeric feature "
+            "to run a meaningful RF tuning."
         )
-        search.fit(X_tr, y_train)
-        best_rf = search.best_estimator_
-        y_pred_best = best_rf.predict(X_te)
+    else:
+        # ---------------------------------------
+        # 1) Build X, y and do simple preprocessing
+        # ---------------------------------------
+        X = dfy[feature_cols]
+        y = dfy["soh"].astype(float).values
 
-        if target == "soh":
-            mae_best = mean_absolute_error(y_test, y_pred_best)
-            r2_best = r2_score(y_test, y_pred_best)
-            st.write("**Best RF params:**", search.best_params_)
-            st.write(f"**Best RF MAE:** {mae_best:.4f}, **R²:** {r2_best:.3f}")
-        else:
-            acc_best = accuracy_score(y_test, y_pred_best)
-            st.write("**Best RF params:**", search.best_params_)
-            st.write(f"**Best RF Accuracy:** {acc_best:.3f}")
+        # Impute & scale (simple but enough for tuning)
+        imp = SimpleImputer(strategy="median")
+        X_imp = imp.fit_transform(X)
+        scaler = StandardScaler()
+        X_proc = scaler.fit_transform(X_imp)
 
-        cv_res = pd.DataFrame(search.cv_results_)
-        if target == "soh":
-            cv_res["mean_MAE"] = -cv_res["mean_test_score"]
-            cv_res_sorted = cv_res.sort_values("mean_MAE")
-        else:
-            cv_res["mean_Accuracy"] = cv_res["mean_test_score"]
-            cv_res_sorted = cv_res.sort_values("mean_Accuracy", ascending=False)
+        # ---------------------------------------
+        # 2) Run the cached RF tuning
+        # ---------------------------------------
+        with st.spinner("Running RandomForest GridSearchCV (once per dataset selection)..."):
+            cvres = run_rf_tuning(pd.DataFrame(X_proc, index=dfy.index), y)
 
-        cols_show = [
-            "param_n_estimators",
-            "param_max_depth",
-            "param_min_samples_split",
-            "mean_test_score",
-            "std_test_score",
-            "rank_test_score",
-        ]
-        cols_show = [c for c in cols_show if c in cv_res_sorted.columns]
+        # ---------------------------------------
+        # 3) Show best combo and table
+        # ---------------------------------------
+        best_row = cvres.loc[cvres["mae"].idxmin()]
+        st.success(
+            f"**Best RF params** → "
+            f"`n_estimators={int(best_row['param_n_estimators'])}`, "
+            f"`max_depth={best_row['param_max_depth']}`, "
+            f"**CV MAE = {best_row['mae']:.4f}**"
+        )
 
-        st.markdown("#### RF tuning table (top configurations)")
-        st.dataframe(cv_res_sorted[cols_show].head(10), use_container_width=True)
+        st.markdown("**All tested combinations (sorted by MAE)**")
+        st.dataframe(
+            cvres[["param_n_estimators", "param_max_depth", "mae"]]
+            .sort_values("mae")
+            .rename(
+                columns={
+                    "param_n_estimators": "n_estimators",
+                    "param_max_depth": "max_depth",
+                    "mae": "CV MAE",
+                }
+            ),
+            width="stretch",
+        )
+
+        # ---------------------------------------
+        # 4) Performance plot: MAE vs n_estimators, one line per max_depth
+        # ---------------------------------------
+        plot_df = cvres.copy()
+        plot_df["param_n_estimators"] = plot_df["param_n_estimators"].astype(int)
+        plot_df["param_max_depth"] = plot_df["param_max_depth"].astype(str)
+
+        fig_rf = px.line(
+            plot_df,
+            x="param_n_estimators",
+            y="mae",
+            color="param_max_depth",
+            markers=True,
+            template=PLOTLY_TEMPLATE,
+            labels={
+                "param_n_estimators": "Number of trees (n_estimators)",
+                "param_max_depth": "Max depth",
+                "mae": "CV MAE (lower is better)",
+            },
+            title="RandomForest tuning: MAE vs number of trees (by max_depth)",
+        )
+        fig_rf.update_layout(
+            height=400,
+            margin=dict(l=40, r=20, t=60, b=40),
+            legend_title_text="max_depth",
+        )
+        st.plotly_chart(fig_rf, width="stretch")
+
         st.caption(
-            "Interpretation: this table shows the best RF hyperparameter combinations "
-            "found by RandomizedSearchCV."
+            "- Each **point** is one hyperparameter combination tested by GridSearchCV.\n"
+            "- The **x‑axis** is the number of trees in the forest.\n"
+            "- Each **line colour** is a different `max_depth` value.\n"
+            "- The **y‑axis** is cross‑validated MAE; **lower is better**.\n"
+            "You can now visually see whether adding more trees or changing depth still helps, "
+            "instead of just seeing a single best number."
         )
 
-        st.markdown("#### RF tuning performance plot")
-        if target == "soh":
-            top_plot = cv_res_sorted.head(10)
-            fig_tune = px.bar(
-                top_plot,
-                x="param_n_estimators",
-                y="mean_MAE",
-                color="param_max_depth",
-                template=PLOTLY_TEMPLATE,
-                title="RandomForest tuning – mean MAE (lower is better)",
-            )
-        else:
-            top_plot = cv_res_sorted.head(10)
-            fig_tune = px.bar(
-                top_plot,
-                x="param_n_estimators",
-                y="mean_Accuracy",
-                color="param_max_depth",
-                template=PLOTLY_TEMPLATE,
-                title="RandomForest tuning – mean Accuracy (higher is better)",
-            )
-        st.plotly_chart(fig_tune, use_container_width=True)
-        st.caption(
-            "Interpretation: each bar is a hyperparameter configuration. "
-            "This plot visualises the model selection step."
-        )
 
 # -------------------------------------------------------------------
 # 6. DEEP LEARNING & ENSEMBLES TAB
@@ -2470,6 +2508,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
