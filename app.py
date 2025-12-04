@@ -738,14 +738,13 @@ with tabs[0]:
         - **Rich visualizations**: histograms, box/violin, scatter, 3D scatter,
           scatter matrix, PCA, correlation & missingness heatmaps, etc.
 
-        Each tab matches the course topics (IDA/EDA, Missingness, Encoding, Regression,
-        SVD/PCA, Time Series, NLP) and the final project rubric.
+   
 
-         -To reduce energy use and protect the environment, many countries are shifting toward clean alternatives to fossil fuel vehicle power sources. 
-         Lithium ion batteries have become widely used because they offer high energy density, long life, and no memory effect. 
-         As these batteries operate over time, their capacity decreases and their internal resistance increases. 
-         This process is known as battery aging and it affects both performance and safety, as well as the accuracy of important indicators such as the 
-         State of Charge (SOC). SOC represents the amount of usable charge left in the battery at any moment.
+        To reduce energy use and protect the environment, many countries are shifting toward clean alternatives to fossil fuel vehicle power sources. 
+        Lithium ion batteries have become widely used because they offer high energy density, long life, and no memory effect. 
+        As these batteries operate over time, their capacity decreases and their internal resistance increases. 
+        This process is known as battery aging and it affects both performance and safety, as well as the accuracy of important indicators such as the 
+        State of Charge (SOC). SOC represents the amount of usable charge left in the battery at any moment.
         A battery is considered to have reached the end of its life when its capacity falls to about 80 percent of its original value or when its 
         internal resistance doubles. At this stage the battery can no longer meet performance needs and continued use may create safety risks. 
         For this reason it is important to estimate the State of Health (SOH) and the Remaining Useful Life (RUL). 
@@ -2373,6 +2372,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
