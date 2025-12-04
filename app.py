@@ -205,7 +205,7 @@ def plot_nn_architecture(layer_sizes, title="Neural network architecture"):
 
 
 # -------------------------------------------------------------------
-# SYNTHETIC EV DATA (3 MAIN SOURCES + 2 AUX)
+# SYNTHETIC EV DATA (BASE SOURCES)
 # -------------------------------------------------------------------
 @st.cache_data
 def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) -> pd.DataFrame:
@@ -321,10 +321,22 @@ def generate_ev_dataset(profile: str, n_cells=4, n_cycles=260, seed: int = 0) ->
 
 
 @st.cache_data
+def get_base_sources():
+    """Base synthetic per-cycle sources."""
+    return {
+        "Urban": generate_ev_dataset("Urban", seed=0),
+        "Highway": generate_ev_dataset("Highway", seed=1),
+        "Mixed": generate_ev_dataset("Mixed", seed=2),
+    }
+
+
 def build_metadata_tables(per_cycle_sources: dict[str, pd.DataFrame]):
+    """Build cell metadata & environment profile for ALL datasets (including uploads)."""
     cells = []
     for dsname, df in per_cycle_sources.items():
-        for cid in sorted(df["cell_id"].unique()):
+        if "cell_id" not in df.columns:
+            continue
+        for cid in sorted(pd.Series(df["cell_id"]).astype(str).unique()):
             cells.append((dsname, cid))
 
     rng = np.random.default_rng(42)
@@ -344,11 +356,16 @@ def build_metadata_tables(per_cycle_sources: dict[str, pd.DataFrame]):
         )
     cell_metadata = pd.DataFrame(meta_rows)
 
-    env_rows = [
-        dict(dataset="Urban", region="hot city", climate_index="hot-humid"),
-        dict(dataset="Highway", region="mild corridor", climate_index="temperate"),
-        dict(dataset="Mixed", region="mixed region", climate_index="temperate"),
-    ]
+    env_rows = []
+    for ds in per_cycle_sources.keys():
+        if ds == "Urban":
+            env_rows.append(dict(dataset=ds, region="hot city", climate_index="hot-humid"))
+        elif ds == "Highway":
+            env_rows.append(dict(dataset=ds, region="mild corridor", climate_index="temperate"))
+        elif ds == "Mixed":
+            env_rows.append(dict(dataset=ds, region="mixed region", climate_index="temperate"))
+        else:
+            env_rows.append(dict(dataset=ds, region="uploaded region", climate_index="unknown"))
     env_profile = pd.DataFrame(env_rows)
 
     return cell_metadata, env_profile
@@ -371,7 +388,7 @@ def feature_engineering(df: pd.DataFrame):
     else:
         d["stress_index"] = np.nan
 
-    if "cap_ah" in d.columns:
+    if "cap_ah" in d.columns and "q_abs" in d.columns and "e_abs" in d.columns:
         d["q_norm"] = d["q_abs"] / (d["cap_ah"] + 1e-6)
         d["e_norm"] = d["e_abs"] / (d["cap_ah"] + 1e-6)
     else:
@@ -390,33 +407,25 @@ def feature_engineering(df: pd.DataFrame):
     return d
 
 
-@st.cache_data
-def get_all_sources():
-    urban = generate_ev_dataset("Urban", seed=0)
-    highway = generate_ev_dataset("Highway", seed=1)
-    mixed = generate_ev_dataset("Mixed", seed=2)
-    per_cycle_sources = {"Urban": urban, "Highway": highway, "Mixed": mixed}
-
-    cell_metadata, env_profile = build_metadata_tables(per_cycle_sources)
-    return per_cycle_sources, cell_metadata, env_profile
-
-
 def clean_and_integrate(per_cycle_sources, cell_metadata, env_profile):
     cleaned_sources = {}
     for name, df in per_cycle_sources.items():
         d = df.copy()
         d = d.drop_duplicates()
+        if "dataset" not in d.columns:
+            d["dataset"] = name
         d["dataset"] = d["dataset"].astype("category")
+        if "cell_id" not in d.columns:
+            d["cell_id"] = f"{name}_CELL"
         d["cell_id"] = d["cell_id"].astype("category")
-        d["bucket"] = d["bucket"].astype("category")
         if "cycle" in d.columns:
-            d["cycle"] = d["cycle"].astype(int)
+            d["cycle"] = pd.to_numeric(d["cycle"], errors="coerce").fillna(0).astype(int)
+        if "bucket" in d.columns:
+            d["bucket"] = d["bucket"].astype("category")
         cleaned_sources[name] = d
 
-    # concat all datasets to form "combined_all"
     combined = pd.concat(list(cleaned_sources.values()), ignore_index=True)
 
-    # merge 2nd & 3rd data sources
     combined = combined.merge(
         cell_metadata,
         on=["dataset", "cell_id"],
@@ -607,18 +616,48 @@ def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
 
 
 # -------------------------------------------------------------------
-# LOAD SYNTHETIC DATA
-# -------------------------------------------------------------------
-per_cycle_sources, cell_metadata, env_profile = get_all_sources()
-cleaned_sources, combined_all = clean_and_integrate(
-    per_cycle_sources, cell_metadata, env_profile
-)
-
-# -------------------------------------------------------------------
-# SIDEBAR CONTROLS
+# SIDEBAR: FILE UPLOAD + CONTROLS
 # -------------------------------------------------------------------
 st.sidebar.title("Controls")
 
+st.sidebar.subheader("Data sources")
+st.sidebar.caption(
+    "Base synthetic data: **Urban**, **Highway**, **Mixed**.\n"
+    "You can also upload **multiple CSV files** with your own EV per‑cycle data."
+)
+
+uploaded_files = st.sidebar.file_uploader(
+    "Upload extra EV per-cycle CSV files",
+    type=["csv"],
+    accept_multiple_files=True,
+    help="Each file becomes a separate dataset (Upload_1, Upload_2, ...).",
+)
+
+# base synthetic sources
+base_sources = get_base_sources()
+
+# integrate uploads
+per_cycle_sources = base_sources.copy()
+if uploaded_files:
+    for i, f in enumerate(uploaded_files, start=1):
+        try:
+            df_up = pd.read_csv(f)
+            ds_name = f"Upload_{i}"
+            df_up = df_up.copy()
+            df_up["dataset"] = ds_name  # override/ensure dataset name
+            if "cell_id" not in df_up.columns:
+                df_up["cell_id"] = f"{ds_name}_CELL"
+            if "cycle" not in df_up.columns:
+                df_up["cycle"] = np.arange(len(df_up))
+            per_cycle_sources[ds_name] = df_up
+        except Exception as e:
+            st.sidebar.warning(f"Could not read {f.name}: {e}")
+
+# now build metadata & combined table from ALL sources (synthetic + uploads)
+cell_metadata, env_profile = build_metadata_tables(per_cycle_sources)
+cleaned_sources, combined_all = clean_and_integrate(per_cycle_sources, cell_metadata, env_profile)
+
+# dataset selector uses ALL dataset names
 ds_names = list(per_cycle_sources.keys())
 selected_sources = st.sidebar.multiselect(
     "Select dataset(s) to analyse",
@@ -684,53 +723,45 @@ with tabs[0]:
 
     st.markdown(
         """
-        This app is a **full end‑to‑end data science project** built around synthetic
-        but realistic **EV battery usage** data.
+        This app is a **full end‑to‑end data science project** around **EV battery health**.
 
-        **Core idea**  
-        We simulate three EV usage profiles:
+        You can:
+        - Use built‑in synthetic datasets: **Urban**, **Highway**, **Mixed**.
+        - Upload **multiple CSV files** with your own EV per‑cycle data (each becomes `Upload_1`, `Upload_2`, ...).
+        - Combine and compare **all datasets** side‑by‑side.
 
-        - **Urban**: stop‑and‑go, hot, aggressive.
-        - **Highway**: smoother long trips, cooler.
-        - **Mixed**: in between.
-
-        For each cycle we generate features like:
-
+        Each cycle has features like:
         - `soh` – **State of Health** (0–1)
         - `cap_ah` – capacity in Amp‑hours
         - `q_abs`, `e_abs` – charge / energy throughput
         - `temp_mean`, `temp_max`, `temp_spread` – thermal behaviour
-        - `current_rms`, `stress_index` – electrical/thermal stress
+        - `current_rms`, `stress_index` – electrical/thermal stress index
         - `usage_text` – short textual description of usage pattern
+        - plus metadata: `manufacturer`, `cooling`, `vehicle_segment`, `region`, `climate_index`.
 
-        We **intentionally add missing data**, then:
-
-        - Diagnose **MCAR / MAR** patterns and impute with 3 methods.
-        - Engineer features like `stress_index` and `cycle_bin`.
-        - Encode everything (numeric, categorical, text) into a model‑ready matrix.
+        We intentionally inject missingness (MCAR + MAR), then:
+        - Diagnose missingness and compare **Simple / KNN / MICE** imputation.
+        - Engineer features (`temp_spread`, `stress_index`, `q_norm`, `e_norm`, `cycle_bin`).
+        - Encode numeric, categorical, and text features into a model‑ready matrix.
         - Train:
-            - Classical models (RandomForest, GradientBoosting)
-            - **Deep neural network** (3‑layer MLP)
-            - **XGBoost ensemble** (when available)
-        - Estimate **SOH** and **Remaining Useful Life (RUL)**.
-        - Optionally do **time‑series forecasting** using AutoReg.
+            - Classical models (RandomForest, GradientBoosting),
+            - **Deep neural networks** (3‑layer MLP),
+            - **XGBoost ensembles** (when available).
+        - Estimate SOH, **RUL (Remaining Useful Life)**, and do SOH forecasting.
 
         ---
         ### What each tab means
 
-        1. **📖 Introduction** – you are here: project story + tab overview.  
-        2. **🏠 Summary** – KPIs, SOH curves, health buckets, quick scatter.  
-        3. **📦 Data Overview** – see all datasets after cleaning & feature engineering; type summary & basic stats.  
-        4. **📊 EDA & Viz Gallery** – histogram, box, violin, scatter, 3D scatter, scatter matrix, correlation heatmaps.  
-        5. **🧩 Missingness Lab** – missing value patterns, heatmap, imputation RMSE comparison.  
-        6. **🔁 Encoding & Classical Models** – **before vs after encoding**, encoding map, RF & GB performance.  
-        7. **🧠 Deep Learning & Ensembles** – **neural network architecture plot**, MLP vs XGBoost metrics, loss curve, confusion matrix / regression scatter.  
-        8. **🔮 Predictions & Forecasting** – RUL, SOH trend‑based estimation, and AutoReg time‑series forecast.  
-        9. **🌍 Insights & Rubric** – human‑readable EV insights + rubric alignment table.  
-        10. **💾 Export** – download cleaned & engineered dataset for GitHub + documentation.
-
-        Use the **sidebar** to switch datasets (Urban / Highway / Mixed / All),
-        choose imputation strategy, and pick the modelling task (SOH regression or bucket classification).
+        1. **📖 Introduction** – project story, how data is generated / uploaded, what each tab does.  
+        2. **🏠 Summary** – combined KPIs, dataset mix (to verify Urban/Highway/Mixed/Uploads), SOH curves, health buckets.  
+        3. **📦 Data Overview** – table view of combined data + type summary & basic stats.  
+        4. **📊 EDA & Viz Gallery** – histograms, box, violin, scatter, 3D scatter, scatter matrix, correlation heatmaps.  
+        5. **🧩 Missingness Lab** – missingness patterns, heatmaps, and imputer RMSE comparison.  
+        6. **🔁 Encoding & Classical Models** – before vs after encoding, encoding map, RF & GB performance.  
+        7. **🧠 Deep Learning & Ensembles** – neural network architecture plot, loss curve, confusion matrix / regression scatter, XGBoost comparison.  
+        8. **🔮 Predictions & Forecasting** – RUL estimates per cell + optional AutoReg SOH forecast.  
+        9. **🌍 Insights & Rubric** – real-world explanations and rubric mapping for a 100% project.  
+        10. **💾 Export** – download cleaned & engineered combined dataset for your GitHub repo.
         """
     )
 
@@ -742,8 +773,8 @@ with tabs[1]:
         "Summary dashboard",
         [
             "High-level KPIs for selected dataset(s).",
+            "Dataset mix across Urban / Highway / Mixed / Uploads.",
             "SOH curves, energy throughput, health buckets, and overall missingness.",
-            "Quick scatter view of SOH vs stress index.",
         ],
     )
 
@@ -757,7 +788,7 @@ with tabs[1]:
     with c4:
         kpi("Avg % missing", f"{pct_missing(current_df):.1f}%", "across all columns")
 
-    st.markdown("### Dataset mix (debugging the 'only Urban' issue)")
+    st.markdown("### Dataset mix (this is where you check it's **not only Urban**)")
     ds_counts = (
         current_df["dataset"]
         .astype(str)
@@ -865,7 +896,7 @@ with tabs[2]:
         [
             "View integrated dataset after cleaning and feature engineering.",
             "Check data types, uniqueness, and missingness.",
-            "See all three EV profiles (Urban/Highway/Mixed) together.",
+            "See all built‑in and uploaded datasets together.",
         ],
     )
 
@@ -928,25 +959,9 @@ with tabs[2]:
 
     st.markdown("### Cell metadata (2nd data source)")
     st.dataframe(cell_metadata.head(10), use_container_width=True)
-    fig_meta = px.histogram(
-        cell_metadata,
-        x="vehicle_segment",
-        color="cooling",
-        template=PLOTLY_TEMPLATE,
-        title="Vehicle segment vs cooling (metadata)",
-    )
-    st.plotly_chart(fig_meta, use_container_width=True)
 
     st.markdown("### Environment profile (3rd data source)")
     st.dataframe(env_profile, use_container_width=True)
-    fig_env = px.bar(
-        env_profile,
-        x="dataset",
-        y="region",
-        template=PLOTLY_TEMPLATE,
-        title="Dataset vs region (categorical; count plot)",
-    )
-    st.plotly_chart(fig_env, use_container_width=True)
 
 # -------------------------------------------------------------------
 # 3. EDA & VIZ GALLERY TAB
@@ -956,7 +971,7 @@ with tabs[3]:
         "EDA & Viz Gallery",
         [
             "Histogram, boxplot, violin, scatter, 3D scatter, scatter matrix, correlation heatmap.",
-            "Compare distributions across Urban / Highway / Mixed.",
+            "Compare distributions across Urban / Highway / Mixed / Uploads.",
         ],
     )
 
@@ -1183,8 +1198,8 @@ with tabs[5]:
         [
             "Show data BEFORE encoding (raw columns).",
             "Show encoded design matrix AFTER encoding.",
-            "Show **exactly which columns are encoded** and how.",
-            "Train classical models (RandomForest & GradientBoosting) and visualise performance.",
+            "Show exactly which columns are encoded and how.",
+            "Train classical models (RandomForest & GradientBoosting).",
         ],
     )
 
@@ -1416,8 +1431,6 @@ with tabs[6]:
         - Output:
             - For **SOH regression**: 1 neuron → predicted SOH (continuous)
             - For **bucket classification**: neurons for each class → class scores
-
-        This is a **deep neural network** (3 hidden layers) trained with backpropagation.
         """
     )
 
@@ -1768,7 +1781,6 @@ with tabs[8]:
         [
             "Real-world insights for EV battery monitoring.",
             "Rubric coverage table for base + advanced requirements.",
-            "Extra stress_index visualisation.",
         ],
     )
 
@@ -1805,12 +1817,13 @@ with tabs[8]:
     rubric_items = [
         (
             "Data Collection & Preparation",
-            "3 synthetic per-cycle data sources (Urban / Highway / Mixed) + cell_metadata + env_profile; "
+            "3 synthetic datasets (Urban/Highway/Mixed) + multi-file CSV upload; "
             "advanced cleaning & integration; typed columns & categories.",
         ),
         (
             "EDA & Visualisations",
-            "Histograms, boxplots, violin plots, 2D & 3D scatter, scatter matrix, correlation heatmaps, line & pie charts.",
+            "Histograms, boxplots, violin plots, 2D & 3D scatter, scatter matrix, "
+            "correlation heatmaps, line & pie charts, missingness heatmaps.",
         ),
         (
             "Data Processing & Feature Engineering",
@@ -1819,17 +1832,17 @@ with tabs[8]:
         ),
         (
             "Model Development & Evaluation",
-            "Classical models (RF & GB) for regression and classification; train/test split; metrics "
+            "Classical models (RF & GB) + deep MLP + XGBoost; train/test split; metrics "
             "(MAE, R², Accuracy); optional RF RandomizedSearchCV.",
         ),
         (
             "Streamlit App",
-            "Multi-tab app, dataset selector, target/task selector, imputation choice, interactive plots, "
-            "expander documentation, caching for synthetic data.",
+            "Multi-tab app, dataset selector, upload of multiple datasets, task selector, "
+            "imputation choice, interactive plots, expander documentation, dark theme.",
         ),
         (
             "GitHub & Documentation",
-            "Export CSV in app; you will add README, data dictionary, and Streamlit URL in the repo.",
+            "Export CSV in app; you add README, data dictionary, and Streamlit URL in the repo.",
         ),
         (
             "Advanced Modelling Techniques",
@@ -1864,14 +1877,14 @@ with tabs[9]:
         "Export",
         [
             "Download cleaned per-cycle dataset (with engineered features).",
-            "This CSV is the main artifact to keep in your GitHub repo.",
+            "This CSV is the main artifact for your GitHub repo and README.",
         ],
     )
 
     st.markdown("### Download cleaned dataset (current selection)")
     st.write(
         f"Rows: **{len(current_df)}**, columns: **{len(current_df.columns)}**. "
-        f"Sources: **{', '.join(selected_sources)}**."
+        f"Sources included: **{', '.join(selected_sources)}**."
     )
     csv_bytes = current_df.to_csv(index=False).encode("utf-8")
     st.download_button(
