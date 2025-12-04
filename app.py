@@ -1067,7 +1067,7 @@ with tabs[2]:
     # ------------------------------------------------------------------
     # Parallel coordinates plot (the plot in your screenshot)
     
-       # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
     # Parallel coordinates plot (multi‑feature view of cycles)
     # ------------------------------------------------------------------
     st.markdown("### Parallel coordinates view of cycles")
@@ -1099,6 +1099,7 @@ with tabs[2]:
             max_value=5000,
             value=1000,
             step=200,
+            help="Sampling keeps the plot readable when there are many cycles.",
         )
         if len(df_par) > max_rows:
             df_par = df_par.sample(max_rows, random_state=42)
@@ -1106,29 +1107,54 @@ with tabs[2]:
         # Color by SOH if present, otherwise by the first dimension
         color_dim = "soh" if "soh" in par_dims else par_dims[0]
 
+        # Pretty axis labels
+        dim_labels = {c: c.replace("_", " ").title() for c in par_dims}
+
         fig_par = px.parallel_coordinates(
             df_par,
             dimensions=par_dims,
             color=color_dim,
             color_continuous_scale=px.colors.sequential.Blues,
+            labels=dim_labels,
             template=PLOTLY_TEMPLATE,
         )
+        # Make sure it fits and isn’t clipped
         fig_par.update_layout(
             title="Parallel coordinates: multi‑feature profile of cycles",
-            height=450,
+            height=500,                     # a bit taller for readability
+            margin=dict(l=60, r=40, t=60, b=40),
+            autosize=True,
         )
 
         st.plotly_chart(fig_par, width="stretch")
         st.caption(
-            "Each polyline is one drive cycle. The vertical axes are features such as cycle, SOH, "
-            "current, temperature, and SOC (or whatever numeric columns exist in the current dataset). "
-            "Darker blue lines correspond to higher values of the color dimension (usually SOH)."
+            "Each vertical axis is a feature (e.g., cycle, SOH, current, temperature, SOC). "
+            "Each polyline is one drive cycle passing through all axes."
+        )
+
+        # Extra explanation: how to read the plot
+        st.markdown("#### How to read this plot")
+        st.write(
+            """
+- Look for **bundles of lines**:
+  - A tight bundle on the SOH axis near 1.0 means many healthy cycles.
+  - Lines dipping lower on the SOH axis correspond to degraded cycles.
+- Follow a single line across axes:
+  - A low‑SOH line that also has **high current** and **high temperature** suggests stress‑induced degradation.
+- Compare datasets:
+  - If you selected multiple datasets in the sidebar, you’ll see **mixed patterns**;
+    e.g., Urban cycles may show more lines with high current and temperature and lower SOH.
+- The colour scale:
+  - Darker blue = higher value of the colour dimension (usually SOH).
+  - This helps you visually link “healthy” vs “aged” cycles to specific feature ranges.
+"""
         )
     else:
         st.info(
             "This dataset has fewer than 3 numeric columns, so a parallel‑coordinates plot "
             "is not very informative."
         )
+
 
 # -------------------------------------------------------------------
 # 3. EDA & VIZ GALLERY TAB
@@ -2397,6 +2423,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
