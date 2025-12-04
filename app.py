@@ -929,182 +929,183 @@ with tabs[1]:
 # -------------------------------------------------------------------
 # 2. DATA OVERVIEW TAB
 # ------------------# -------------------------------------------------------------------
-# 2. DATA OVERVIEW TAB  (UPDATED)
-# -------------------------------------------------------------------
 with tabs[2]:
     explain(
-        "Data overview",
+        "EDA Gallery",
         [
-            "View the fully integrated dataset after cleaning and feature engineering.",
-            "This tab always shows **ALL datasets** (Urban, Highway, Mixed, and any uploads) "
-            "so you can compare them side‑by‑side.",
-            "Later tabs (EDA, modelling, etc.) still respect the **sidebar selection**.",
+            "Multiple visualisations (histograms, boxplots, scatter, correlation heatmaps, 3D plots, parallel coordinates).",
+            "Shows distributions and relationships across datasets and features.",
         ],
     )
 
-    # --- 2.1 Combined view of ALL datasets (not filtered by sidebar) ---
-    st.markdown("### Combined dataset (ALL sources: Urban, Highway, Mixed, Uploads)")
-    df_all_view = combined_all.copy()
-    df_all_view = df_all_view.loc[:, ~df_all_view.columns.duplicated()]
+    # Use the CURRENT selection from the sidebar
+    df = current_df.copy()
+    num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    cat_cols = [c for c in df.columns if df[c].dtype == "object" and c not in ["note"]]
 
-    st.dataframe(
-        df_all_view.head(30),
-        use_container_width=True,
-    )
-    st.caption(
-        "These are the first 30 rows of the fully integrated dataset, "
-        "including **all** built‑in sources (Urban, Highway, Mixed) and any uploaded CSV files."
-    )
-
-    # --- 2.2 Per‑dataset row counts & SOH summary for ALL datasets ---
-    st.markdown("#### Per‑dataset summary (ALL sources)")
-
-    per_ds_all = (
-        df_all_view.groupby("dataset")
-        .agg(
-            n_rows=("soh", "size"),
-            n_cells=("cell_id", "nunique"),
-            n_cycles=("cycle", "nunique"),
-            mean_soh=("soh", "mean"),
-        )
-        .reset_index()
-    )
-    st.dataframe(per_ds_all, use_container_width=True)
-
-    c1, c2 = st.columns(2)
+    # Quick KPIs
+    c1, c2, c3 = st.columns(3)
     with c1:
-        fig_rows = px.bar(
-            per_ds_all,
-            x="dataset",
-            y="n_rows",
-            color="dataset",
-            color_discrete_sequence=COLOR_SEQ,
-            template=PLOTLY_TEMPLATE,
-            title="Row count per dataset (ALL sources)",
-        )
-        st.plotly_chart(fig_rows, use_container_width=True)
-        st.caption(
-            "Interpretation: this bar chart shows how many rows come from each dataset. "
-            "If one dataset dominates, it can bias models toward that usage profile."
-        )
-
+        kpi("Rows", int(len(df)), "current selection")
     with c2:
-        fig_soh = px.bar(
-            per_ds_all,
-            x="dataset",
-            y="mean_soh",
-            color="dataset",
-            color_discrete_sequence=COLOR_SEQ,
+        kpi("Cells", int(df["cell_id"].nunique()), "unique cell_id")
+    with c3:
+        kpi("Datasets", int(df["dataset"].nunique()), ", ".join(sorted(df["dataset"].unique())))
+
+    # ------------------------------------------------------------------
+    # Histograms for a few key numeric variables
+    # ------------------------------------------------------------------
+    st.markdown("### Histograms of key numeric variables")
+
+    top_num = [c for c in ["soh", "soc", "temp_avg", "current_avg", "voltage_avg"] if c in num_cols][:4]
+    if len(top_num) >= 1:
+        n_plots = len(top_num)
+        fig = make_subplots(rows=1, cols=n_plots, subplot_titles=top_num)
+        for i, col in enumerate(top_num, start=1):
+            fig.add_trace(
+                go.Histogram(
+                    x=df[col],
+                    name=col,
+                    marker_color=COLOR_SEQ[i - 1],
+                    opacity=0.8,
+                ),
+                row=1,
+                col=i,
+            )
+        fig.update_layout(
             template=PLOTLY_TEMPLATE,
-            title="Average SOH per dataset (ALL sources)",
-        )
-        st.plotly_chart(fig_soh, use_container_width=True)
-        st.caption(
-            "Interpretation: this compares mean SOH across all datasets. "
-            "For example, Urban may have lower SOH than Highway, reflecting harsher conditions."
-        )
-
-    st.markdown("---")
-
-    # --- 2.3 Type info & missingness for ALL datasets ---
-    st.markdown("### Column info & summary statistics (ALL sources)")
-
-    col1, col2 = st.columns([1.2, 1.4])
-
-    with col1:
-        dtype_df_all = pd.DataFrame(
-            {
-                "column": df_all_view.columns,
-                "dtype": [str(df_all_view[c].dtype) for c in df_all_view.columns],
-                "n_unique": [df_all_view[c].nunique(dropna=True) for c in df_all_view.columns],
-                "pct_missing": [100 * df_all_view[c].isna().mean() for c in df_all_view.columns],
-            }
-        )
-        st.dataframe(dtype_df_all, use_container_width=True)
-        st.caption(
-            "Interpretation: this summarises each column across **all** datasets: "
-            "data type, uniqueness, and percent missing. It helps you decide which variables "
-            "need encoding or imputation."
-        )
-
-        miss_bar_all = dtype_df_all.sort_values("pct_missing", ascending=False)
-        fig_miss_all = px.bar(
-            miss_bar_all,
-            x="column",
-            y="pct_missing",
-            template=PLOTLY_TEMPLATE,
-            color="pct_missing",
-            color_continuous_scale="Reds",
-            title="Percent missing by column (ALL sources)",
+            showlegend=False,
+            title="Histograms (current selection)",
             height=350,
         )
-        fig_miss_all.update_layout(xaxis_tickangle=45)
-        st.plotly_chart(fig_miss_all, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
         st.caption(
-            "Interpretation: taller, redder bars show features with high missingness "
-            "across the entire combined dataset."
+            "These histograms show the distribution of key numeric features like SOH, SOC, and temperature."
         )
 
-    with col2:
-        st.dataframe(
-            df_all_view.describe(include="all").transpose(),
-            use_container_width=True,
+    # ------------------------------------------------------------------
+    # Boxplots & scatter
+    # ------------------------------------------------------------------
+    st.markdown("### Boxplots & scatter")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if "soh" in num_cols:
+            fig_box = px.box(
+                df,
+                x="dataset",
+                y="soh",
+                color="dataset",
+                color_discrete_sequence=COLOR_SEQ,
+                template=PLOTLY_TEMPLATE,
+                title="SOH by dataset (boxplot)",
+            )
+            st.plotly_chart(fig_box, use_container_width=True)
+            st.caption("Boxplots highlight medians, quartiles, and outliers of SOH per dataset.")
+
+    with col_b:
+        if "soc" in num_cols and "soh" in num_cols:
+            fig_sc = px.scatter(
+                df,
+                x="soc",
+                y="soh",
+                color="dataset",
+                color_discrete_sequence=COLOR_SEQ,
+                template=PLOTLY_TEMPLATE,
+                title="SOH vs SOC",
+                opacity=0.7,
+            )
+            st.plotly_chart(fig_sc, use_container_width=True)
+            st.caption("Scatter plot of SOH vs State‑of‑Charge (SOC), coloured by dataset.")
+
+    # ------------------------------------------------------------------
+    # Correlation heatmap
+    # ------------------------------------------------------------------
+    st.markdown("### Correlation heatmap (numeric features)")
+    if len(num_cols) >= 2:
+        corr = df[num_cols].corr()
+        fig_corr = px.imshow(
+            corr,
+            text_auto=".2f",
+            color_continuous_scale="RdBu_r",
+            zmin=-1,
+            zmax=1,
+            template=PLOTLY_TEMPLATE,
+            title="Correlation heatmap (current selection)",
         )
+        st.plotly_chart(fig_corr, use_container_width=True)
+        st.caption("Correlation heatmap shows linear relationships between numeric variables.")
+    else:
+        st.info("Not enough numeric columns for a correlation heatmap.")
+
+    # ------------------------------------------------------------------
+    # 3D scatter
+    # ------------------------------------------------------------------
+    st.markdown("### 3D Scatter (current_avg, temp_avg, SOH)")
+    if {"current_avg", "temp_avg", "soh"}.issubset(df.columns):
+        fig3d = px.scatter_3d(
+            df,
+            x="current_avg",
+            y="temp_avg",
+            z="soh",
+            color="dataset",
+            opacity=0.7,
+            template=PLOTLY_TEMPLATE,
+            title="3D Scatter: current vs temperature vs SOH",
+        )
+        st.plotly_chart(fig3d, use_container_width=True)
         st.caption(
-            "Interpretation: descriptive statistics over **all datasets** give a global view "
-            "of ranges, averages, and distribution shapes."
+            "3D scatter helps see how high current and high temperature jointly "
+            "push SOH down in certain datasets."
         )
 
-    st.markdown("---")
+    # ------------------------------------------------------------------
+    # Parallel coordinates plot (the plot in your screenshot)
+    # ------------------------------------------------------------------
+    st.markdown("### Parallel coordinates view of cycles")
 
-    # --- 2.4 For reference: current selection overview (what modelling will use) ---
-    st.markdown("### Current selection overview (what other tabs use)")
+    # Choose potential dimensions, then keep only those actually present
+    base_dims = ["cycle", "soh", "current_avg", "temp_avg", "soc", "voltage_avg"]
+    par_dims: list[str] = []
+    for col_name in base_dims:
+        if col_name in df.columns:
+            par_dims.append(col_name)
 
-    st.write(
-        f"Current sidebar selection: **{', '.join(selected_sources)}**. "
-        "This filtered subset is used in the EDA, modelling, and forecasting tabs."
-    )
+    if len(par_dims) >= 3:
+        # Build subset: selected numeric columns + dataset for context
+        cols_for_par = par_dims + ["dataset"]
+        df_par = df[cols_for_par].dropna()
 
-    cur_summary = (
-        current_df.groupby("dataset")
-        .agg(
-            n_rows=("soh", "size"),
-            n_cells=("cell_id", "nunique"),
-            n_cycles=("cycle", "nunique"),
-            mean_soh=("soh", "mean"),
+        # Sample to avoid overplotting
+        max_rows = st.slider(
+            "Max number of cycles to show in parallel coordinates",
+            min_value=200,
+            max_value=5000,
+            value=1000,
+            step=200,
         )
-        .reset_index()
-    )
-    st.dataframe(cur_summary, use_container_width=True)
-    st.caption(
-        "Interpretation: this tells you which datasets are actually being used in the "
-        "rest of the app right now."
-    )
+        if len(df_par) > max_rows:
+            df_par = df_par.sample(max_rows, random_state=42)
 
-    # --- 2.5 Show 10 example rows from the current selection too ---
-    st.markdown("#### Sample rows from CURRENT SELECTION")
-    st.dataframe(current_df.head(10), use_container_width=True)
-    st.caption(
-        "These are the first 10 rows after applying the sidebar filter. "
-        "Change the selection in the sidebar to see different subsets here."
-    )
-
-    st.markdown("---")
-
-    # --- 2.6 Cell metadata & environment tables (still 2nd & 3rd sources) ---
-    st.markdown("### Cell metadata (2nd data source)")
-    st.dataframe(cell_metadata.head(15), use_container_width=True)
-    st.caption(
-        "Cell-level metadata: manufacturer, cooling technology, and vehicle segment for each cell."
-    )
-
-    st.markdown("### Environment profile (3rd data source)")
-    st.dataframe(env_profile, use_container_width=True)
-    st.caption(
-        "Environment profile: which region/climate each dataset belongs to. "
-        "These are joined to the per-cycle data."
-    )
-
+        fig_par = px.parallel_coordinates(
+            df_par,
+            dimensions=par_dims,
+            color="soh" if "soh" in par_dims else par_dims[0],
+            color_continuous_scale=px.colors.sequential.Blues,
+            template=PLOTLY_TEMPLATE,
+        )
+        fig_par.update_layout(
+            title="Parallel coordinates: multi‑feature profile of cycles",
+            height=450,
+        )
+        st.plotly_chart(fig_par, use_container_width=True)
+        st.caption(
+            "Each polyline is one drive cycle. Vertical axes are features like cycle index, SOH, "
+            "average current, temperature, and SOC. Darker blue lines correspond to higher SOH. "
+            "This lets you compare many features across cycles in a single visual."
+        )
+    else:
+        st.info("Need at least 3 numeric columns (e.g., cycle, soh, temp_avg) for a parallel‑coordinates plot.")
 
 # -------------------------------------------------------------------
 # 3. EDA & VIZ GALLERY TAB
@@ -2372,6 +2373,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
