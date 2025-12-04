@@ -1831,64 +1831,70 @@ with tabs[5]:
                 )
 
         # RF HYPERPARAMETER TUNING
-        st.markdown("### 🔧 RandomForest hyperparameter tuning")
+        st.markdown("## 🔧 RandomForest hyperparameter tuning (automatic)")
 
-st.write(
-    "We explore how the **RandomForestRegressor** behaves as we change the "
-    "number of trees (`n_estimators`) and maximum tree depth (`max_depth`). "
-    "The plot below should show **multiple points and lines**, not just a single number."
-)
+# We need a target column 'soh' and some numeric features
+if "soh" not in current_df.columns:
+    st.info("No 'soh' column found in the current dataset. RF regression can't be tuned.")
+else:
+    dfy = current_df.dropna(subset=["soh"]).copy()
+    num_cols = dfy.select_dtypes(include=[np.number]).columns.tolist()
 
-# Button so we don't re-run tuning on every widget change
-if st.button("Run RF hyperparameter search", key="rf_tune_btn"):
-    with st.spinner("Running GridSearchCV for RandomForest..."):
-        # --- 1) Define a *real* grid with several combinations ---
-        param_grid = {
-            "n_estimators": [50, 100, 200, 400],
-            "max_depth": [None, 5, 10, 20],
-        }
+    # Remove target & any obvious indices from the feature set
+    feature_cols = [c for c in num_cols if c not in ["soh", "cycle", "time_s"]]
 
-        rf = RandomForestRegressor(
-            random_state=42,
-            n_jobs=-1,
+    if len(dfy) < 40 or len(feature_cols) < 1:
+        st.info(
+            "Need at least ~40 labeled rows and at least one numeric feature "
+            "to run a meaningful RF tuning."
         )
+    else:
+        # ---------------------------------------
+        # 1) Build X, y and do simple preprocessing
+        # ---------------------------------------
+        X = dfy[feature_cols]
+        y = dfy["soh"].astype(float).values
 
-        grid = GridSearchCV(
-            rf,
-            param_grid=param_grid,
-            cv=3,
-            scoring="neg_mean_absolute_error",
-            n_jobs=-1,
-            return_train_score=False,
-        )
+        # Impute & scale (simple but enough for tuning)
+        imp = SimpleImputer(strategy="median")
+        X_imp = imp.fit_transform(X)
+        scaler = StandardScaler()
+        X_proc = scaler.fit_transform(X_imp)
 
-        # X_train_struct, y_train should already exist from your encoding step
-        grid.fit(X_train_struct, y_train)
+        # ---------------------------------------
+        # 2) Run the cached RF tuning
+        # ---------------------------------------
+        with st.spinner("Running RandomForest GridSearchCV (once per dataset selection)..."):
+            cvres = run_rf_tuning(pd.DataFrame(X_proc, index=dfy.index), y)
 
-        # --- 2) Collect full cv_results_ ---
-        cvres = pd.DataFrame(grid.cv_results_)
-
-        # Convert negative MAE back to positive MAE
-        cvres["mae"] = -cvres["mean_test_score"]
-
-        # Show best params numerically
+        # ---------------------------------------
+        # 3) Show best combo and table
+        # ---------------------------------------
         best_row = cvres.loc[cvres["mae"].idxmin()]
         st.success(
-            f"Best params: n_estimators={best_row['param_n_estimators']}, "
-            f"max_depth={best_row['param_max_depth']}, "
-            f"CV MAE = {best_row['mae']:.4f}"
+            f"**Best RF params** → "
+            f"`n_estimators={int(best_row['param_n_estimators'])}`, "
+            f"`max_depth={best_row['param_max_depth']}`, "
+            f"**CV MAE = {best_row['mae']:.4f}**"
         )
 
-        # Small table of all combinations
-        st.markdown("**Full RF tuning table (sorted by MAE)**")
+        st.markdown("**All tested combinations (sorted by MAE)**")
         st.dataframe(
-            cvres[
-                ["param_n_estimators", "param_max_depth", "mae"]
-            ].sort_values("mae"),
+            cvres[["param_n_estimators", "param_max_depth", "mae"]]
+            .sort_values("mae")
+            .rename(
+                columns={
+                    "param_n_estimators": "n_estimators",
+                    "param_max_depth": "max_depth",
+                    "mae": "CV MAE",
+                }
+            ),
             width="stretch",
         )
 
-        # --- 3) Performance curve: MAE vs n_estimators, one line per max_depth ---
+        # ---------------------------------------
+        # 4) Performance plot: MAE vs n_estimators, one line per max_depth
+        # ---------------------------------------
         plot_df = cvres.copy()
         plot_df["param_n_estimators"] = plot_df["param_n_estimators"].astype(int)
         plot_df["param_max_depth"] = plot_df["param_max_depth"].astype(str)
@@ -1907,19 +1913,21 @@ if st.button("Run RF hyperparameter search", key="rf_tune_btn"):
             },
             title="RandomForest tuning: MAE vs number of trees (by max_depth)",
         )
-        fig_rf.update_layout(height=400, margin=dict(l=40, r=20, t=60, b=40))
+        fig_rf.update_layout(
+            height=400,
+            margin=dict(l=40, r=20, t=60, b=40),
+            legend_title_text="max_depth",
+        )
         st.plotly_chart(fig_rf, width="stretch")
 
         st.caption(
-            "- **Each point** is one hyperparameter combination tested by GridSearchCV.\n"
-            "- **X‑axis**: number of trees in the forest.\n"
-            "- **Colour/line**: different `max_depth` values.\n"
-            "- **Y‑axis (MAE)**: lower is better. The bottom part of the plot shows the best trade‑off.\n"
-            "You can now visually see whether adding more trees or increasing depth still helps, "
-            "instead of just getting one best number."
+            "- Each **point** is one hyperparameter combination tested by GridSearchCV.\n"
+            "- The **x‑axis** is the number of trees in the forest.\n"
+            "- Each **line colour** is a different `max_depth` value.\n"
+            "- The **y‑axis** is cross‑validated MAE; **lower is better**.\n"
+            "You can now visually see whether adding more trees or changing depth still helps, "
+            "instead of just seeing a single best number."
         )
-else:
-    st.info("Click **Run RF hyperparameter search** to see the tuning plot.")
 
 
 # -------------------------------------------------------------------
@@ -2467,6 +2475,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
