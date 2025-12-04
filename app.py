@@ -456,9 +456,6 @@ def clean_and_integrate(per_cycle_sources, cell_metadata, env_profile):
     return cleaned_sources, combined
 
 
-# -------------------------------------------------------------------
-# ENCODING / MODELLING HELPER
-# -------------------------------------------------------------------
 def build_encoded_matrices(df: pd.DataFrame, target: str, imputer_name: str):
     """
     Returns dict with:
@@ -689,11 +686,6 @@ MIN_LABELS_TRAIN = st.sidebar.slider(
     5,
 )
 
-st.sidebar.markdown("---")
-tune_rf = st.sidebar.checkbox(
-    "Run RF hyperparameter tuning (RandomizedSearchCV, HPC demo)", value=False
-)
-
 if "last_results" not in st.session_state:
     st.session_state["last_results"] = {}
 
@@ -753,11 +745,11 @@ with tabs[0]:
         ### What each tab means
 
         1. **📖 Introduction** – project story, how data is generated / uploaded, what each tab does.  
-        2. **🏠 Summary** – combined KPIs, dataset mix (to verify Urban/Highway/Mixed/Uploads), SOH curves, health buckets.  
+        2. **🏠 Summary** – combined KPIs, dataset mix (Urban/Highway/Mixed/Uploads), SOH curves, health buckets.  
         3. **📦 Data Overview** – table view of combined data + type summary & basic stats.  
         4. **📊 EDA & Viz Gallery** – histograms, box, violin, scatter, 3D scatter, scatter matrix, correlation heatmaps.  
         5. **🧩 Missingness Lab** – missingness patterns, heatmaps, and imputer RMSE comparison.  
-        6. **🔁 Encoding & Classical Models** – before vs after encoding, encoding map, RF & GB performance.  
+        6. **🔁 Encoding & Classical Models** – before vs after encoding, encoding map, RF & GB performance, RF tuning.  
         7. **🧠 Deep Learning & Ensembles** – neural network architecture plot, loss curve, confusion matrix / regression scatter, XGBoost comparison.  
         8. **🔮 Predictions & Forecasting** – RUL estimates per cell + optional AutoReg SOH forecast.  
         9. **🌍 Insights & Rubric** – real-world explanations and rubric mapping for a 100% project.  
@@ -788,7 +780,7 @@ with tabs[1]:
     with c4:
         kpi("Avg % missing", f"{pct_missing(current_df):.1f}%", "across all columns")
 
-    st.markdown("### Dataset mix (this is where you check it's **not only Urban**)")
+    st.markdown("### Dataset mix (check it's **not only Urban**)")
     ds_counts = (
         current_df["dataset"]
         .astype(str)
@@ -1200,6 +1192,7 @@ with tabs[5]:
             "Show encoded design matrix AFTER encoding.",
             "Show exactly which columns are encoded and how.",
             "Train classical models (RandomForest & GradientBoosting).",
+            "Always run RF hyperparameter tuning (RandomizedSearchCV) and show tuning plot.",
         ],
     )
 
@@ -1361,49 +1354,96 @@ with tabs[5]:
             )
             st.plotly_chart(fig_m, use_container_width=True)
 
+        # ----------------------------------------------------
+        # RF HYPERPARAMETER TUNING (ALWAYS RUN, WITH PLOT)
+        # ----------------------------------------------------
         st.markdown("### RF hyperparameter tuning (RandomizedSearchCV, HPC)")
 
-        if tune_rf:
-            st.info("Running RandomizedSearchCV for RandomForest (n_jobs=-1)...")
-            if target == "soh":
-                rf_base = RandomForestRegressor(random_state=7)
-                param_dist = {
-                    "n_estimators": [150, 250, 400],
-                    "max_depth": [None, 6, 10],
-                    "min_samples_split": [2, 5, 10],
-                }
-                scorer = "neg_mean_absolute_error"
-            else:
-                rf_base = RandomForestClassifier(random_state=7)
-                param_dist = {
-                    "n_estimators": [150, 250, 400],
-                    "max_depth": [None, 6, 10],
-                    "min_samples_split": [2, 5, 10],
-                }
-                scorer = "accuracy"
+        # base RF and scoring
+        if target == "soh":
+            rf_base = RandomForestRegressor(random_state=7)
+            param_dist = {
+                "n_estimators": [150, 250, 400],
+                "max_depth": [None, 6, 10],
+                "min_samples_split": [2, 5, 10],
+            }
+            scorer = "neg_mean_absolute_error"
+        else:
+            rf_base = RandomForestClassifier(random_state=7)
+            param_dist = {
+                "n_estimators": [150, 250, 400],
+                "max_depth": [None, 6, 10],
+                "min_samples_split": [2, 5, 10],
+            }
+            scorer = "accuracy"
 
-            search = RandomizedSearchCV(
-                rf_base,
-                param_distributions=param_dist,
-                n_iter=5,
-                scoring=scorer,
-                cv=3,
-                random_state=7,
-                n_jobs=-1,
+        search = RandomizedSearchCV(
+            rf_base,
+            param_distributions=param_dist,
+            n_iter=6,
+            scoring=scorer,
+            cv=3,
+            random_state=7,
+            n_jobs=-1,
+        )
+        search.fit(X_tr, y_train)
+        best_rf = search.best_estimator_
+        y_pred_best = best_rf.predict(X_te)
+
+        if target == "soh":
+            mae_best = mean_absolute_error(y_test, y_pred_best)
+            r2_best = r2_score(y_test, y_pred_best)
+            st.write("**Best RF params:**", search.best_params_)
+            st.write(f"**Best RF MAE:** {mae_best:.4f}, **R²:** {r2_best:.3f}")
+        else:
+            acc_best = accuracy_score(y_test, y_pred_best)
+            st.write("**Best RF params:**", search.best_params_)
+            st.write(f"**Best RF Accuracy:** {acc_best:.3f}")
+
+        # tuning results table + plot
+        cv_res = pd.DataFrame(search.cv_results_)
+        if target == "soh":
+            cv_res["mean_MAE"] = -cv_res["mean_test_score"]
+            cv_res_sorted = cv_res.sort_values("mean_MAE")
+        else:
+            cv_res["mean_Accuracy"] = cv_res["mean_test_score"]
+            cv_res_sorted = cv_res.sort_values("mean_Accuracy", ascending=False)
+
+        cols_show = [
+            "param_n_estimators",
+            "param_max_depth",
+            "param_min_samples_split",
+            "mean_test_score",
+            "std_test_score",
+            "rank_test_score",
+        ]
+        cols_show = [c for c in cols_show if c in cv_res_sorted.columns]
+
+        st.markdown("#### RF tuning table (top 10 configurations)")
+        st.dataframe(cv_res_sorted[cols_show].head(10), use_container_width=True)
+
+        st.markdown("#### RF tuning performance plot")
+        if target == "soh":
+            top_plot = cv_res_sorted.head(10)
+            fig_tune = px.bar(
+                top_plot,
+                x="param_n_estimators",
+                y="mean_MAE",
+                color="param_max_depth",
+                template=PLOTLY_TEMPLATE,
+                title="RandomForest tuning – mean MAE (lower is better)",
             )
-            search.fit(X_tr, y_train)
-            best_rf = search.best_estimator_
-            y_pred_best = best_rf.predict(X_te)
-
-            if target == "soh":
-                mae_best = mean_absolute_error(y_test, y_pred_best)
-                r2_best = r2_score(y_test, y_pred_best)
-                st.write("Best RF params:", search.best_params_)
-                st.write(f"Best RF MAE: {mae_best:.4f}, R²: {r2_best:.3f}")
-            else:
-                acc_best = accuracy_score(y_test, y_pred_best)
-                st.write("Best RF params:", search.best_params_)
-                st.write(f"Best RF Accuracy: {acc_best:.3f}")
+        else:
+            top_plot = cv_res_sorted.head(10)
+            fig_tune = px.bar(
+                top_plot,
+                x="param_n_estimators",
+                y="mean_Accuracy",
+                color="param_max_depth",
+                template=PLOTLY_TEMPLATE,
+                title="RandomForest tuning – mean Accuracy (higher is better)",
+            )
+        st.plotly_chart(fig_tune, use_container_width=True)
 
 # -------------------------------------------------------------------
 # 6. DEEP LEARNING & ENSEMBLES TAB
@@ -1833,7 +1873,7 @@ with tabs[8]:
         (
             "Model Development & Evaluation",
             "Classical models (RF & GB) + deep MLP + XGBoost; train/test split; metrics "
-            "(MAE, R², Accuracy); optional RF RandomizedSearchCV.",
+            "(MAE, R², Accuracy); RF RandomizedSearchCV for hyperparameter tuning.",
         ),
         (
             "Streamlit App",
