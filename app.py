@@ -627,7 +627,7 @@ st.sidebar.title("Controls")
 
 st.sidebar.subheader("Data sources")
 st.sidebar.caption(
-    "Built‑in synthetic data: **Urban**, **Highway**, **Mixed**.\n"
+    "Uploaded data: **Urban**, **Highway**, **Mixed**.\n"
     "You can also upload **multiple CSV files** with your own EV per‑cycle data.\n"
     "Each file becomes a separate dataset (Upload_1, Upload_2, ...)."
 )
@@ -2372,6 +2372,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
