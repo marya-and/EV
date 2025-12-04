@@ -2217,6 +2217,197 @@ with tabs[7]:
                     )
 
 # -------------------------------------------------------------------
+# END RESULTS TAB
+# -------------------------------------------------------------------
+with tabs[8]:  # use the correct index or name for your Forecasting tab
+    explain(
+        "Forecasting & End Results",
+        [
+            "Compare a classic baseline model and an advanced model for forecasting SOH (State of Health).",
+            "We use a lagged time-series setup: SOH at future cycles is predicted from past SOH values.",
+            "This lets us answer: does our advanced model meaningfully improve over the classical baseline?"
+        ],
+    )
+
+    st.markdown("### 1. Choose cell and forecast horizon")
+
+    # we’ll work with current_df (honours sidebar dataset selection)
+    df_soh = current_df.dropna(subset=["soh"]).copy()
+    if df_soh.empty:
+        st.info("No SOH labels available in the current selection. Try enabling more datasets or check raw→SOH derivation.")
+        st.stop()
+
+    cells = sorted(df_soh["cell_id"].astype(str).unique())
+    col_a, col_b = st.columns(2)
+    chosen_cell = col_a.selectbox("Select cell_id for forecasting", cells, index=0)
+    horizon = col_b.slider("Forecast horizon (future cycles)", 5, 50, 20, 1)
+
+    g = df_soh[df_soh["cell_id"].astype(str) == chosen_cell].sort_values("cycle")
+    g = g.dropna(subset=["soh"])
+    g = g[g["cycle"].notna()]
+    if len(g) < 20:
+        st.info("Need at least 20 cycles with SOH for forecasting; choose another cell or dataset.")
+        st.stop()
+
+    st.markdown("#### Raw SOH trajectory for selected cell")
+    fig_raw = px.line(
+        g,
+        x="cycle",
+        y="soh",
+        template=PLOTLY_TEMPLATE,
+        markers=True,
+        title=f"SOH vs Cycle for cell {chosen_cell}",
+        color_discrete_sequence=["#1f77b4"],
+    )
+    st.plotly_chart(fig_raw, use_container_width=True)
+    st.caption(
+        "This is the observed SOH trajectory. We’ll train models on the early part "
+        "and see how well they forecast later cycles."
+    )
+
+    # ----- Build supervised dataset from time series: lag(k) -----
+    def build_lagged_ts(series, max_lag=10):
+        """
+        Turn a 1D SOH time series into supervised learning samples:
+        X_t = [soh_{t-1}, ..., soh_{t-max_lag}], y_t = soh_t
+        """
+        s = pd.Series(series).reset_index(drop=True)
+        data = {}
+        for k in range(1, max_lag + 1):
+            data[f"lag_{k}"] = s.shift(k)
+        dfX = pd.DataFrame(data)
+        y = s
+        df_super = pd.concat([dfX, y], axis=1).dropna()
+        X = df_super[[c for c in df_super.columns if c.startswith("lag_")]].values
+        y = df_super.iloc[:, -1].values
+        return X, y
+
+    max_lag = 10
+    soh_values = g["soh"].values
+    X_all, y_all = build_lagged_ts(soh_values, max_lag=max_lag)
+    n = len(y_all)
+    if n < 30:
+        st.info("Not enough lagged samples for robust forecasting; need more cycles.")
+        st.stop()
+
+    # Train/test split by time: first 70% train, last 30% test
+    split_idx = int(0.7 * n)
+    X_tr, X_te = X_all[:split_idx], X_all[split_idx:]
+    y_tr, y_te = y_all[:split_idx], y_all[split_idx:]
+
+    # ----- Models: Classic vs Advanced -----
+    from sklearn.linear_model import LinearRegression
+    from sklearn.ensemble import RandomForestRegressor
+    from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+    classic_model = LinearRegression()
+    advanced_model = RandomForestRegressor(
+        n_estimators=200,
+        max_depth=6,
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    # Fit both
+    classic_model.fit(X_tr, y_tr)
+    advanced_model.fit(X_tr, y_tr)
+
+    # Predict
+    y_pred_classic = classic_model.predict(X_te)
+    y_pred_advanced = advanced_model.predict(X_te)
+
+    # Metrics
+    def metrics(y_true, y_pred, label):
+        mae = mean_absolute_error(y_true, y_pred)
+        rmse = mean_squared_error(y_true, y_pred, squared=False)
+        return {"Model": label, "MAE": mae, "RMSE": rmse}
+
+    results = pd.DataFrame(
+        [
+            metrics(y_te, y_pred_classic, "Classic (Linear Regression)"),
+            metrics(y_te, y_pred_advanced, "Advanced (Random Forest)"),
+        ]
+    )
+
+    st.markdown("### 2. Forecast performance: classic vs advanced")
+    st.dataframe(results, use_container_width=True)
+
+    fig_bar = px.bar(
+        results.melt(id_vars="Model", value_vars=["MAE", "RMSE"], var_name="Metric", value_name="Value"),
+        x="Model",
+        y="Value",
+        color="Metric",
+        barmode="group",
+        text="Value",
+        template=PLOTLY_TEMPLATE,
+        title="Forecast Error Comparison",
+        color_discrete_sequence=["#ff7f0e", "#2ca02c"],
+    )
+    fig_bar.update_traces(texttemplate="%{text:.4f}", textposition="outside")
+    fig_bar.update_layout(yaxis_title="Error", xaxis_title="", height=400)
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+    st.caption(
+        "Interpretation: Lower MAE and RMSE are better. "
+        "If the Advanced (Random Forest) bar is consistently lower than Classic (Linear Regression), "
+        "it indicates that the advanced model captures non‑linear degradation patterns better."
+    )
+
+    # ----- Plot actual vs predicted over the test window -----
+    st.markdown("### 3. Test window: true vs predicted SOH")
+
+    # align test indices to actual cycle numbers for nicer x-axis
+    test_cycles = g["cycle"].iloc[-len(y_te):].values
+
+    df_plot = pd.DataFrame(
+        {
+            "cycle": np.tile(test_cycles, 3),
+            "SOH": np.concatenate([y_te, y_pred_classic, y_pred_advanced]),
+            "Series": (
+                ["True"] * len(y_te)
+                + ["Classic prediction"] * len(y_te)
+                + ["Advanced prediction"] * len(y_te)
+            ),
+        }
+    )
+
+    fig_ts = px.line(
+        df_plot,
+        x="cycle",
+        y="SOH",
+        color="Series",
+        template=PLOTLY_TEMPLATE,
+        markers=True,
+        title="True vs Predicted SOH (test window)",
+        color_discrete_map={
+            "True": "#1f77b4",
+            "Classic prediction": "#ff7f0e",
+            "Advanced prediction": "#2ca02c",
+        },
+    )
+    st.plotly_chart(fig_ts, use_container_width=True)
+
+    st.caption(
+        "Interpretation: The closer the predicted lines are to the blue 'True' curve, "
+        "the better the model. The advanced model should ideally track dips and curvature more accurately."
+    )
+
+    st.markdown("---")
+    st.markdown("### 4. Summary (for your report/presentation)")
+
+    # short textual summary based on metrics
+    best = results.sort_values("RMSE").iloc[0]
+    st.write(
+        f"- In this cell’s forecast, **{best['Model']}** achieved the lowest RMSE "
+        f"of **{best['RMSE']:.4f}**, compared to the other model.\n"
+        f"- This suggests that, for this dataset and cell, the **{best['Model']}** "
+        "captures the SOH degradation dynamics more effectively.\n"
+        "- You can repeat this for different cells or dataset selections (Urban/Highway/Mixed) "
+        "to support your narrative about model robustness."
+    )
+
+
+# -------------------------------------------------------------------
 # 8. INSIGHTS & RUBRIC TAB
 # -------------------------------------------------------------------
 with tabs[8]:
@@ -2350,4 +2541,5 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
