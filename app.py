@@ -991,11 +991,16 @@ with tabs[2]:
     # ------------------------------------------------------------------
     # Boxplots & scatter
     # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
+    # Boxplots & scatter
+    # ------------------------------------------------------------------
     st.markdown("### Boxplots & scatter")
 
     col_a, col_b = st.columns(2)
+
+    # ---- Left: SOH by dataset (boxplot) ----
     with col_a:
-        if "soh" in num_cols:
+        if "soh" in num_cols and "dataset" in df.columns:
             fig_box = px.box(
                 df,
                 x="dataset",
@@ -1005,23 +1010,60 @@ with tabs[2]:
                 template=PLOTLY_TEMPLATE,
                 title="SOH by dataset (boxplot)",
             )
-            st.plotly_chart(fig_box, use_container_width=True)
-            st.caption("Boxplots highlight medians, quartiles, and outliers of SOH per dataset.")
+            fig_box.update_layout(height=350, margin=dict(l=40, r=20, t=50, b=40))
+            st.plotly_chart(fig_box, width="stretch")
+            st.caption(
+                "Boxplots show the distribution of **State of Health (SOH)** for each dataset "
+                "(Urban / Highway / Mixed / uploaded). You can compare medians, spread, and outliers."
+            )
+        else:
+            st.info("Need 'soh' and 'dataset' columns to plot SOH boxplots.")
 
+    # ---- Right: Scatter (SOH vs another numeric feature) ----
     with col_b:
-        if "soc" in num_cols and "soh" in num_cols:
+        # pick an X axis:
+        #  1. prefer 'soc' if available
+        #  2. otherwise any other numeric feature that isn't 'soh'
+        x_candidates = []
+        if "soc" in num_cols:
+            x_candidates.append("soc")
+        x_candidates += [c for c in num_cols if c not in ["soh", "soc", "cycle"]]
+
+        if "soh" in num_cols and len(x_candidates) > 0:
+            x_default = x_candidates[0]
+            # optional: let the user change X-axis if you want more control
+            x_axis = st.selectbox(
+                "Scatter X‑axis (numeric)",
+                options=x_candidates,
+                index=0,
+                key="overview_scatter_x",
+                help="X‑axis feature for the scatter plot (e.g., SOC, temperature, current).",
+            )
+
             fig_sc = px.scatter(
                 df,
-                x="soc",
+                x=x_axis,
                 y="soh",
-                color="dataset",
+                color="dataset" if "dataset" in df.columns else None,
                 color_discrete_sequence=COLOR_SEQ,
                 template=PLOTLY_TEMPLATE,
-                title="SOH vs SOC",
+                title=f"SOH vs {x_axis}",
                 opacity=0.7,
             )
-            st.plotly_chart(fig_sc, use_container_width=True)
-            st.caption("Scatter plot of SOH vs State‑of‑Charge (SOC), coloured by dataset.")
+            fig_sc.update_layout(height=350, margin=dict(l=40, r=20, t=50, b=40))
+            st.plotly_chart(fig_sc, width="stretch")
+            st.caption(
+                f"This scatter shows how **SOH** changes as **{x_axis}** changes. "
+                "If you see a downward trend, higher values of this feature may be linked to faster degradation. "
+                "Colours distinguish datasets."
+            )
+        elif "soh" in num_cols:
+            st.info(
+                "Only one numeric column (SOH) available, so a scatter plot isn't meaningful. "
+                "Once you add more numeric features (e.g., SOC, currents, temperatures), a scatter will appear here."
+            )
+        else:
+            st.info("No SOH column found — cannot plot SOH scatter.")
 
     # ------------------------------------------------------------------
     # Correlation heatmap
@@ -2423,6 +2465,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
