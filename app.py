@@ -1066,22 +1066,33 @@ with tabs[2]:
 
     # ------------------------------------------------------------------
     # Parallel coordinates plot (the plot in your screenshot)
+    
+       # ------------------------------------------------------------------
+    # Parallel coordinates plot (multi‑feature view of cycles)
     # ------------------------------------------------------------------
     st.markdown("### Parallel coordinates view of cycles")
 
-    # Choose potential dimensions, then keep only those actually present
-    base_dims = ["cycle", "soh", "current_avg", "temp_avg", "soc", "voltage_avg"]
-    par_dims: list[str] = []
-    for col_name in base_dims:
-        if col_name in df.columns:
-            par_dims.append(col_name)
+    # numeric candidates (already computed above as num_cols)
+    numeric_candidates = [c for c in num_cols if c not in ["cell_id"]]
+
+    # Prefer these if they exist, but fall back to any numeric cols
+    preferred_order = ["cycle", "soh", "current_avg", "temp_avg", "soc", "voltage_avg"]
+    par_dims = [c for c in preferred_order if c in numeric_candidates]
+
+    # If we still have <3, pad with other numeric columns
+    if len(par_dims) < 3:
+        extras = [c for c in numeric_candidates if c not in par_dims]
+        par_dims.extend(extras[: max(0, 3 - len(par_dims))])
+
+    # Don’t let it explode: cap to first 6 dimensions
+    par_dims = par_dims[:6]
 
     if len(par_dims) >= 3:
         # Build subset: selected numeric columns + dataset for context
-        cols_for_par = par_dims + ["dataset"]
+        cols_for_par = par_dims + (["dataset"] if "dataset" in df.columns else [])
         df_par = df[cols_for_par].dropna()
 
-        # Sample to avoid overplotting
+        # Sample rows so the plot stays readable
         max_rows = st.slider(
             "Max number of cycles to show in parallel coordinates",
             min_value=200,
@@ -1092,10 +1103,13 @@ with tabs[2]:
         if len(df_par) > max_rows:
             df_par = df_par.sample(max_rows, random_state=42)
 
+        # Color by SOH if present, otherwise by the first dimension
+        color_dim = "soh" if "soh" in par_dims else par_dims[0]
+
         fig_par = px.parallel_coordinates(
             df_par,
             dimensions=par_dims,
-            color="soh" if "soh" in par_dims else par_dims[0],
+            color=color_dim,
             color_continuous_scale=px.colors.sequential.Blues,
             template=PLOTLY_TEMPLATE,
         )
@@ -1103,14 +1117,18 @@ with tabs[2]:
             title="Parallel coordinates: multi‑feature profile of cycles",
             height=450,
         )
-        st.plotly_chart(fig_par, use_container_width=True)
+
+        st.plotly_chart(fig_par, width="stretch")
         st.caption(
-            "Each polyline is one drive cycle. Vertical axes are features like cycle index, SOH, "
-            "average current, temperature, and SOC. Darker blue lines correspond to higher SOH. "
-            "This lets you compare many features across cycles in a single visual."
+            "Each polyline is one drive cycle. The vertical axes are features such as cycle, SOH, "
+            "current, temperature, and SOC (or whatever numeric columns exist in the current dataset). "
+            "Darker blue lines correspond to higher values of the color dimension (usually SOH)."
         )
     else:
-        st.info("Need at least 3 numeric columns (e.g., cycle, soh, temp_avg) for a parallel‑coordinates plot.")
+        st.info(
+            "This dataset has fewer than 3 numeric columns, so a parallel‑coordinates plot "
+            "is not very informative."
+        )
 
 # -------------------------------------------------------------------
 # 3. EDA & VIZ GALLERY TAB
@@ -2378,6 +2396,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
