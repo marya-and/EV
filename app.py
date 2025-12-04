@@ -721,8 +721,8 @@ with tabs[0]:
         This app is a full **end‑to‑end data science project** for **EV battery health**.
 
         You can:
-        - Work with 3 built‑in synthetic datasets: **Urban**, **Highway**, **Mixed**.
-        - Upload **multiple CSV files** → each becomes `Upload_1`, `Upload_2`, etc.
+        - Work with 3 datasets: **Urban**, **Highway**, **Mixed**.
+        - You can also upload **multiple CSV files** → each becomes `Upload_1`, `Upload_2`, etc.
         - Analyse them **individually**, **side‑by‑side**, or **all combined**.
 
         We intentionally include:
@@ -1353,6 +1353,55 @@ with tabs[3]:
             )
         else:
             st.info("Not enough text to show token frequencies.")
+
+    # ----------------------------------------------------------------------
+    # Parallel coordinates plot (multivariate view of cycles)
+    # ----------------------------------------------------------------------
+    st.markdown("### Parallel coordinates view of cycles")
+
+    # choose a small set of numeric dimensions to keep the plot readable
+    par_dims = [c for c in ["cycle", "soh", "current_avg", "temp_avg", "soc", "voltage_avg"]
+                if c in df.columns]
+
+    if len(par_dims) >= 3:
+        # build a clean subset: numeric columns + color dimension + dataset
+        df_par = df[par_dims + ["dataset"]].dropna()
+
+        # sampling so the plot doesn't explode with lines
+        max_rows = st.slider(
+            "Max number of cycles to show in parallel coordinates",
+            min_value=200,
+            max_value=5000,
+            value=1000,
+            step=200,
+        )
+        if len(df_par) > max_rows:
+            df_par = df_par.sample(max_rows, random_state=42)
+
+        fig_par = px.parallel_coordinates(
+            df_par,
+            dimensions=par_dims,            # axes
+            color="soh" if "soh" in df_par.columns else df_par[par_dims[0]],
+            color_continuous_scale=px.colors.sequential.Blues,
+            labels={c: c for c in par_dims},
+            template=PLOTLY_TEMPLATE,
+        )
+        fig_par.update_layout(
+            title="Parallel coordinates: multi‑feature profile of cycles",
+            height=450,
+        )
+
+        st.plotly_chart(fig_par, use_container_width=True)
+        st.caption(
+            "Each polyline is one drive cycle. The vertical axes are features "
+            "like cycle index, SOH, average current, temperature, and SOC. "
+            "Lines toward the darker blue end correspond to **higher SOH**, "
+            "so you can visually see how high‑SOH and low‑SOH cycles differ "
+            "across all features at once."
+        )
+    else:
+        st.info("Need at least 3 numeric columns (e.g., cycle, soh, temp_avg) for a parallel‑coordinates plot.")
+
 
 # -------------------------------------------------------------------
 # 4. MISSINGNESS LAB TAB
@@ -2354,6 +2403,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
