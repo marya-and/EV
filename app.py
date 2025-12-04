@@ -1630,6 +1630,9 @@ with tabs[4]:
 # -------------------------------------------------------------------
 # 5. ENCODING & CLASSICAL MODELS TAB
 # -------------------------------------------------------------------
+# -------------------------------------------------------------------
+# 5. ENCODING & CLASSICAL MODELS TAB
+# -------------------------------------------------------------------
 with tabs[5]:
     explain(
         "Encoding & Classical Models",
@@ -1638,7 +1641,7 @@ with tabs[5]:
             "Show encoded design matrix AFTER encoding.",
             "Show exactly which columns are encoded and how (numeric / categorical / TF-IDF).",
             "Train classical models: Linear Regression, RandomForest, GradientBoosting.",
-            "Always run RF hyperparameter tuning (RandomizedSearchCV) and visualise results.",
+            "Run RandomForest hyperparameter tuning and visualise its performance.",
         ],
     )
 
@@ -1647,9 +1650,11 @@ with tabs[5]:
 
     if enc is None or enc["dfy"].shape[0] < MIN_LABELS_TRAIN:
         st.info(
-            f"Not enough labelled rows for target '{target}'. Need at least {MIN_LABELS_TRAIN}."
+            f"Not enough labelled rows for target '{target}'. "
+            f"Need at least {MIN_LABELS_TRAIN} rows after cleaning/encoding."
         )
     else:
+        # unpack encoded bundle
         dfy = enc["dfy"].loc[:, ~enc["dfy"].columns.duplicated()]
         X_tr = enc["X_tr"]
         X_te = enc["X_te"]
@@ -1662,24 +1667,34 @@ with tabs[5]:
         cat_features = enc["cat_features"]
         text_feature = enc["text_feature"]
 
+        # high‑level counts
         c1, c2, c3 = st.columns(3)
         with c1:
-            kpi("Rows with label", len(dfy))
+            kpi("Rows with label", len(dfy), "after cleaning & filtering")
         with c2:
             kpi("Train rows", len(y_train))
         with c3:
             kpi("Test rows", len(y_test))
 
+        # -----------------------
+        # What is being encoded?
+        # -----------------------
         st.markdown("### Which features are being encoded?")
         st.write("**Numeric features (impute + scale):**", num_features or "None")
         st.write("**Categorical features (impute + one‑hot):**", cat_features or "None")
         st.write("**Text feature (TF‑IDF):**", text_feature or "None")
         st.caption(
-            "Interpretation: this section shows how feature types are split: numeric → "
-            "standardization; categorical → one‑hot; text → TF‑IDF."
+            "Interpretation: this section shows how feature types are split: "
+            "numeric → median imputation + standardization; "
+            "categorical → imputation + one‑hot encoding; "
+            "text → TF‑IDF vectorization."
         )
 
+        # -----------------------
+        # BEFORE encoding
+        # -----------------------
         st.markdown("### BEFORE encoding – sample rows from ALL datasets")
+
         show_cols = ["dataset", "cell_id", "cycle", target]
         extra = [
             c
@@ -1700,6 +1715,8 @@ with tabs[5]:
             if c in dfy.columns
         ]
         show_cols += extra
+
+        # de‑duplicate while preserving order
         show_cols_unique = []
         for c in show_cols:
             if c in dfy.columns and c not in show_cols_unique:
@@ -1719,15 +1736,19 @@ with tabs[5]:
 
         st.dataframe(dfy_sample, use_container_width=True)
         st.caption(
-            "Interpretation: this is the **raw feature table** before encoding, showing "
-            "rows from Urban, Highway, Mixed, and any uploaded datasets."
+            "Interpretation: this is the **raw feature table** before encoding, "
+            "showing rows from Urban, Highway, Mixed, and any uploaded datasets."
         )
 
+        # -----------------------
+        # AFTER encoding
+        # -----------------------
         st.markdown("### AFTER encoding – design matrix")
         st.dataframe(encoded_train_df.head(10), use_container_width=True)
         st.caption(
             "Interpretation: this is the actual matrix that goes into the models. "
-            "Each column is a numeric feature (scaled) or a one‑hot encoded category."
+            "Each column is a numeric feature (scaled) or a one‑hot encoded category; "
+            "all missing values have been imputed."
         )
 
         st.markdown("### Encoding map (raw → encoded)")
@@ -1738,8 +1759,11 @@ with tabs[5]:
         )
 
         st.markdown("---")
-        st.subheader(f"Classical model comparison – target: {target}")
+        st.subheader(f"Classical model comparison – target: `{target}`")
 
+        # -----------------------
+        # Classical model training
+        # -----------------------
         models = {}
         if target == "soh":
             models["LinearRegression"] = LinearRegression()
@@ -1765,17 +1789,20 @@ with tabs[5]:
         for name, model in models.items():
             model.fit(X_tr, y_train)
             y_pred = model.predict(X_te)
-            if target == "soh":
+
+            if target == "soh":  # regression metrics
                 mae = mean_absolute_error(y_test, y_pred)
                 r2 = r2_score(y_test, y_pred)
                 rows.append({"model": name, "MAE": mae, "R2": r2})
+                # select best by lowest MAE
                 if best_metric is None or mae < best_metric:
                     best_metric = mae
                     best_name = name
                     best_pred = y_pred
-            else:
+            else:  # classification metrics
                 acc = accuracy_score(y_test, y_pred)
                 rows.append({"model": name, "Accuracy": acc})
+                # select best by highest Accuracy
                 if best_metric is None or acc > best_metric:
                     best_metric = acc
                     best_name = name
@@ -1788,6 +1815,7 @@ with tabs[5]:
             "For SOH regression we focus on MAE/R²; for bucket classification on Accuracy."
         )
 
+        # bar plots + diagnostic plots
         if target == "soh":
             fig_m = px.bar(
                 res_df,
@@ -1795,16 +1823,16 @@ with tabs[5]:
                 y="MAE",
                 color="R2",
                 template=PLOTLY_TEMPLATE,
-                title="SOH regression (LinearReg + RF + GB)",
+                title="SOH regression (LinearReg + RF + GradientBoosting)",
             )
             st.plotly_chart(fig_m, use_container_width=True)
             st.caption(
                 "Interpretation: shorter bars (lower MAE) indicate better models; "
-                "R² gives how much variance in SOH is explained."
+                "R² shows how much variance in SOH is explained."
             )
 
             if best_pred is not None:
-                st.markdown(f"#### Best classical model by MAE: {best_name}")
+                st.markdown(f"#### Best classical model by MAE: `{best_name}`")
                 fig_sc = px.scatter(
                     x=y_test,
                     y=best_pred,
@@ -1825,7 +1853,8 @@ with tabs[5]:
                     "Interpretation: points close to the diagonal line indicate "
                     "good calibration of SOH predictions."
                 )
-        else:
+
+        else:  # classification visualisation
             fig_m = px.bar(
                 res_df,
                 x="model",
@@ -1833,7 +1862,7 @@ with tabs[5]:
                 color="model",
                 color_discrete_sequence=COLOR_SEQ,
                 template=PLOTLY_TEMPLATE,
-                title="Bucket classification (RF + GB)",
+                title="Bucket classification (RF + GradientBoosting)",
             )
             st.plotly_chart(fig_m, use_container_width=True)
             st.caption(
@@ -1859,109 +1888,107 @@ with tabs[5]:
                 ax_cm.set_title(f"{best_name} confusion matrix")
                 st.pyplot(fig_cm, clear_figure=True)
                 st.caption(
-                    "Interpretation: confusion matrix shows which bucket classes are "
+                    "Interpretation: the confusion matrix shows which bucket classes are "
                     "confused with which others."
                 )
 
-        # RF HYPERPARAMETER TUNING
-        st.markdown("## 🔧 RandomForest hyperparameter tuning ")
+        # -------------------------------------------------
+        # RandomForest hyperparameter tuning (kept in this tab)
+        # -------------------------------------------------
+        st.markdown("---")
+        st.markdown("## 🔧 RandomForest hyperparameter tuning")
 
-# We need a target column 'soh' and some numeric features
-if "soh" not in current_df.columns:
-    st.info("No 'soh' column found in the current dataset. RF regression can't be tuned.")
-else:
-    dfy = current_df.dropna(subset=["soh"]).copy()
-    num_cols = dfy.select_dtypes(include=[np.number]).columns.tolist()
+        # Use current_df directly to run a small RF + GridSearch
+        if "soh" not in current_df.columns:
+            st.info(
+                "No 'soh' column found in the current dataset. "
+                "RandomForest regression can't be tuned."
+            )
+        else:
+            df_rf = current_df.dropna(subset=["soh"]).copy()
+            num_cols_rf = df_rf.select_dtypes(include=[np.number]).columns.tolist()
+            feature_cols_rf = [
+                c for c in num_cols_rf if c not in ["soh", "cycle", "time_s"]
+            ]
 
-    # Remove target & any obvious indices from the feature set
-    feature_cols = [c for c in num_cols if c not in ["soh", "cycle", "time_s"]]
+            if len(df_rf) < 40 or len(feature_cols_rf) < 1:
+                st.info(
+                    "Need at least ~40 labelled rows and at least one numeric feature "
+                    "to run a meaningful RF tuning."
+                )
+            else:
+                X_rf = df_rf[feature_cols_rf]
+                y_rf = df_rf["soh"].astype(float).values
 
-    if len(dfy) < 40 or len(feature_cols) < 1:
-        st.info(
-            "Need at least ~40 labeled rows and at least one numeric feature "
-            "to run a meaningful RF tuning."
-        )
-    else:
-        # ---------------------------------------
-        # 1) Build X, y and do simple preprocessing
-        # ---------------------------------------
-        X = dfy[feature_cols]
-        y = dfy["soh"].astype(float).values
+                imp = SimpleImputer(strategy="median")
+                X_imp_rf = imp.fit_transform(X_rf)
+                scaler = StandardScaler()
+                X_proc_rf = scaler.fit_transform(X_imp_rf)
 
-        # Impute & scale (simple but enough for tuning)
-        imp = SimpleImputer(strategy="median")
-        X_imp = imp.fit_transform(X)
-        scaler = StandardScaler()
-        X_proc = scaler.fit_transform(X_imp)
+                with st.spinner(
+                    "Running RandomForest GridSearchCV (once per dataset selection)..."
+                ):
+                    cvres = run_rf_tuning(
+                        pd.DataFrame(X_proc_rf, index=df_rf.index), y_rf
+                    )
 
-        # ---------------------------------------
-        # 2) Run the cached RF tuning
-        # ---------------------------------------
-        with st.spinner("Running RandomForest GridSearchCV (once per dataset selection)..."):
-            cvres = run_rf_tuning(pd.DataFrame(X_proc, index=dfy.index), y)
+                best_row = cvres.loc[cvres["mae"].idxmin()]
+                st.success(
+                    f"**Best RF params** → "
+                    f"`n_estimators={int(best_row['param_n_estimators'])}`, "
+                    f"`max_depth={best_row['param_max_depth']}`, "
+                    f"**CV MAE = {best_row['mae']:.4f}**"
+                )
 
-        # ---------------------------------------
-        # 3) Show best combo and table
-        # ---------------------------------------
-        best_row = cvres.loc[cvres["mae"].idxmin()]
-        st.success(
-            f"**Best RF params** → "
-            f"`n_estimators={int(best_row['param_n_estimators'])}`, "
-            f"`max_depth={best_row['param_max_depth']}`, "
-            f"**CV MAE = {best_row['mae']:.4f}**"
-        )
+                st.markdown("**All tested combinations (sorted by MAE)**")
+                st.dataframe(
+                    cvres[["param_n_estimators", "param_max_depth", "mae"]]
+                    .sort_values("mae")
+                    .rename(
+                        columns={
+                            "param_n_estimators": "n_estimators",
+                            "param_max_depth": "max_depth",
+                            "mae": "CV MAE",
+                        }
+                    ),
+                    use_container_width=True,
+                )
 
-        st.markdown("**All tested combinations (sorted by MAE)**")
-        st.dataframe(
-            cvres[["param_n_estimators", "param_max_depth", "mae"]]
-            .sort_values("mae")
-            .rename(
-                columns={
-                    "param_n_estimators": "n_estimators",
-                    "param_max_depth": "max_depth",
-                    "mae": "CV MAE",
-                }
-            ),
-            width="stretch",
-        )
+                plot_df = cvres.copy()
+                plot_df["param_n_estimators"] = plot_df[
+                    "param_n_estimators"
+                ].astype(int)
+                plot_df["param_max_depth"] = plot_df["param_max_depth"].astype(str)
 
-        # ---------------------------------------
-        # 4) Performance plot: MAE vs n_estimators, one line per max_depth
-        # ---------------------------------------
-        plot_df = cvres.copy()
-        plot_df["param_n_estimators"] = plot_df["param_n_estimators"].astype(int)
-        plot_df["param_max_depth"] = plot_df["param_max_depth"].astype(str)
+                fig_rf = px.line(
+                    plot_df,
+                    x="param_n_estimators",
+                    y="mae",
+                    color="param_max_depth",
+                    markers=True,
+                    template=PLOTLY_TEMPLATE,
+                    labels={
+                        "param_n_estimators": "Number of trees (n_estimators)",
+                        "param_max_depth": "Max depth",
+                        "mae": "CV MAE (lower is better)",
+                    },
+                    title="RandomForest tuning: MAE vs number of trees (by max_depth)",
+                )
+                fig_rf.update_layout(
+                    height=400,
+                    margin=dict(l=40, r=20, t=60, b=40),
+                    legend_title_text="max_depth",
+                )
+                st.plotly_chart(fig_rf, use_container_width=True)
 
-        fig_rf = px.line(
-            plot_df,
-            x="param_n_estimators",
-            y="mae",
-            color="param_max_depth",
-            markers=True,
-            template=PLOTLY_TEMPLATE,
-            labels={
-                "param_n_estimators": "Number of trees (n_estimators)",
-                "param_max_depth": "Max depth",
-                "mae": "CV MAE (lower is better)",
-            },
-            title="RandomForest tuning: MAE vs number of trees (by max_depth)",
-        )
-        fig_rf.update_layout(
-            height=400,
-            margin=dict(l=40, r=20, t=60, b=40),
-            legend_title_text="max_depth",
-        )
-        st.plotly_chart(fig_rf, width="stretch")
-
-        st.caption(
-            "- Each **point** is one hyperparameter combination tested by GridSearchCV.\n"
-            "- The **x‑axis** is the number of trees in the forest.\n"
-            "- Each **line colour** is a different `max_depth` value.\n"
-            "- The **y‑axis** is cross‑validated MAE; **lower is better**.\n"
-            "You can now visually see whether adding more trees or changing depth still helps, "
-            "instead of just seeing a single best number."
-        )
-)
+                st.caption(
+                    "- Each **point** is one hyperparameter combination tested by GridSearchCV.\n"
+                    "- The **x‑axis** is the number of trees in the forest.\n"
+                    "- Each **line colour** is a different `max_depth` value.\n"
+                    "- The **y‑axis** is cross‑validated MAE; **lower is better**.\n"
+                    "This lets us visually compare the tuned RF against the baseline RF "
+                    "in the classical model section above."
+                )
 
 # -------------------------------------------------------------------
 # 6. DEEP LEARNING & ENSEMBLES TAB
@@ -2508,6 +2535,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
