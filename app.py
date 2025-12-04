@@ -2312,8 +2312,8 @@ with tabs[8]:
     rubric_items = [
         (
             "Data Collection & Preparation",
-            "3 synthetic datasets (Urban/Highway/Mixed) + multi-file CSV upload; "
-            "advanced cleaning & integration; typed columns & engineered features.",
+            "3 datasets (Urban/Highway/Mixed) + multi-file CSV upload; "
+            "advanced cleaning & integration; typed columns & features.",
         ),
         (
             "EDA & Visualisations",
@@ -2363,7 +2363,7 @@ with tabs[8]:
     ]
     rubric_df = pd.DataFrame(rubric_items, columns=["Rubric item", "How this app addresses it"])
     st.dataframe(rubric_df, use_container_width=True)
-    st.caption(
+    #st.caption(
         "Use this table directly in your report/presentation to show how you checked "
         "off each rubric requirement."
     )
@@ -2396,6 +2396,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
