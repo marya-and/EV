@@ -720,6 +720,12 @@ with tabs[0]:
         """
         This app is a full **end‑to‑end data science project** for **EV battery health**.
 
+        To reduce energy use and protect the environment, many countries are shifting toward clean alternatives to fossil fuel vehicle power sources. Lithium ion batteries have become widely used because they offer high energy density, long life, and no memory effect. As these batteries operate over time, their capacity decreases and their internal resistance increases. This process is known as battery aging and it affects both performance and safety, as well as the accuracy of important indicators such as the State of Charge (SOC). SOC represents the amount of usable charge left in the battery at any moment.
+
+A battery is considered to have reached the end of its life when its capacity falls to about 80 percent of its original value or when its internal resistance doubles. At this stage the battery can no longer meet performance needs and continued use may create safety risks. For this reason it is important to estimate the State of Health (SOH) and the Remaining Useful Life (RUL). SOH describes the overall aging condition of the battery compared to when it was new, while RUL indicates how much time or how many cycles remain before the battery reaches the end of its life. RUL depends directly on SOH.
+
+Because SOH and RUL cannot be measured during operation, they must be estimated from battery behavior such as voltage, temperature, charge and energy data. Recent data driven methods and feature extraction techniques are improving the accuracy of these estimates and supporting safer and more efficient battery use.
+
         You can:
         - Work with 3 datasets: **Urban**, **Highway**, **Mixed**.
         - You can also upload **multiple CSV files** → each becomes `Upload_1`, `Upload_2`, etc.
@@ -1353,54 +1359,6 @@ with tabs[3]:
             )
         else:
             st.info("Not enough text to show token frequencies.")
-
-    # ----------------------------------------------------------------------
-    # Parallel coordinates plot (multivariate view of cycles)
-    # ----------------------------------------------------------------------
-    st.markdown("### Parallel coordinates view of cycles")
-
-    # choose a small set of numeric dimensions to keep the plot readable
-    par_dims = [c for c in ["cycle", "soh", "current_avg", "temp_avg", "soc", "voltage_avg"]
-                if c in df.columns]
-
-    if len(par_dims) >= 3:
-        # build a clean subset: numeric columns + color dimension + dataset
-        df_par = df[par_dims + ["dataset"]].dropna()
-
-        # sampling so the plot doesn't explode with lines
-        max_rows = st.slider(
-            "Max number of cycles to show in parallel coordinates",
-            min_value=200,
-            max_value=5000,
-            value=1000,
-            step=200,
-        )
-        if len(df_par) > max_rows:
-            df_par = df_par.sample(max_rows, random_state=42)
-
-        fig_par = px.parallel_coordinates(
-            df_par,
-            dimensions=par_dims,            # axes
-            color="soh" if "soh" in df_par.columns else df_par[par_dims[0]],
-            color_continuous_scale=px.colors.sequential.Blues,
-            labels={c: c for c in par_dims},
-            template=PLOTLY_TEMPLATE,
-        )
-        fig_par.update_layout(
-            title="Parallel coordinates: multi‑feature profile of cycles",
-            height=450,
-        )
-
-        st.plotly_chart(fig_par, use_container_width=True)
-        st.caption(
-            "Each polyline is one drive cycle. The vertical axes are features "
-            "like cycle index, SOH, average current, temperature, and SOC. "
-            "Lines toward the darker blue end correspond to **higher SOH**, "
-            "so you can visually see how high‑SOH and low‑SOH cycles differ "
-            "across all features at once."
-        )
-    else:
-        st.info("Need at least 3 numeric columns (e.g., cycle, soh, temp_avg) for a parallel‑coordinates plot.")
 
 
 # -------------------------------------------------------------------
@@ -2403,6 +2361,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
