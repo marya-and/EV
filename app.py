@@ -2364,9 +2364,10 @@ with tabs[8]:
     rubric_df = pd.DataFrame(rubric_items, columns=["Rubric item", "How this app addresses it"])
     st.dataframe(rubric_df, use_container_width=True)
     st.caption(
-        "Use this table directly shows what's covered ".
-        
+        "Use this table directly in your report/presentation to show how you checked "
+        "off each rubric requirement."
     )
+
 
 # -------------------------------------------------------------------
 # 9. EXPORT TAB
