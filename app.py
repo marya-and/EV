@@ -13,11 +13,16 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import seaborn as sns
 import plotly.express as px
+
 import plotly.graph_objects as go          # ← this one is missing
 from plotly.subplots import make_subplots  # ← for the subplot histograms
 
 
 
+
+
+from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import RandomForestRegressor
 
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.compose import ColumnTransformer
@@ -2465,6 +2470,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
