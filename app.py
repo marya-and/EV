@@ -1864,7 +1864,7 @@ with tabs[5]:
                 )
 
         # RF HYPERPARAMETER TUNING
-         st.markdown("## 🔧 RandomForest hyperparameter tuning (automatic)")
+        st.markdown("## 🔧 RandomForest hyperparameter tuning (automatic)")
 
 # We need a target column 'soh' and some numeric features
 if "soh" not in current_df.columns:
@@ -2508,6 +2508,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
