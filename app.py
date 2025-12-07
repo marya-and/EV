@@ -782,7 +782,6 @@ with tabs[0]:
           scatter matrix, PCA, correlation & missingness heatmaps, etc.
 
    
-
 To reduce energy use and protect the environment, many countries are shifting toward clean alternatives 
 to fossil fuel vehicle power sources. Lithium-ion batteries have become widely used because they offer 
 high energy density, long life, and no memory effect. As these batteries operate over time, their 
@@ -805,11 +804,7 @@ This project presents a comprehensive framework for analyzing and forecasting th
 (EV) batteries, focusing on State of Health (SOH) and Remaining Useful Life (RUL). The framework is 
 missing-data–aware, supporting multiple datasets with advanced preprocessing, visualization, and predictive 
 modeling. It is designed as a user-friendly Streamlit web application for interactive exploration, comparison, 
-and insights generation.
-
-
-
-       
+and insights generation.   
         """
     )
     st.markdown("#### Quick tab guide")
