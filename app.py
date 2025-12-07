@@ -799,10 +799,10 @@ with tabs[0]:
        
         """
     )
-st.markdown(" This project presents a comprehensive framework 
+st.write(""" This project presents a comprehensive framework 
         for analyzing and forecasting the health of electric vehicle (EV) batteries, focusing on State of Health (SOH) and Remaining Useful Life (RUL).
 The framework is missing-data–aware, supporting multiple datasets with advanced preprocessing, visualization, and predictive modeling. 
-It is designed as a user-friendly Streamlit web application for interactive exploration, comparison, and insights generation.")
+It is designed as a user-friendly Streamlit web application for interactive exploration, comparison, and insights generation.""")
     st.markdown("#### Quick tab guide")
     st.write(
         """
@@ -2538,6 +2538,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
