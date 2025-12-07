@@ -783,22 +783,34 @@ with tabs[0]:
 
    
 
-        To reduce energy use and protect the environment, many countries are shifting toward clean alternatives to fossil fuel vehicle power sources. 
-        Lithium ion batteries have become widely used because they offer high energy density, long life, and no memory effect. 
-        As these batteries operate over time, their capacity decreases and their internal resistance increases. 
-        This process is known as battery aging and it affects both performance and safety, as well as the accuracy of important indicators such as the 
-        State of Charge (SOC). SOC represents the amount of usable charge left in the battery at any moment.
-        A battery is considered to have reached the end of its life when its capacity falls to about 80 percent of its original value or when its 
-        internal resistance doubles. At this stage the battery can no longer meet performance needs and continued use may create safety risks. 
-        For this reason it is important to estimate the State of Health (SOH) and the Remaining Useful Life (RUL). 
-        SOH describes the overall aging condition of the battery compared to when it was new, while RUL indicates how much time or 
-        how many cycles remain before the battery reaches the end of its life. RUL depends directly on SOH.
-        Because SOH and RUL cannot be measured during operation, they must be estimated from battery behavior such as voltage, 
-        temperature, charge and energy data. Recent data driven methods and feature extraction techniques are improving the accuracy of these estimates 
-        and supporting safer and more efficient battery use.  This project presents a comprehensive framework 
-        for analyzing and forecasting the health of electric vehicle (EV) batteries, focusing on State of Health (SOH) and Remaining Useful Life (RUL).
-        The framework is missing-data–aware, supporting multiple datasets with advanced preprocessing, visualization, and predictive modeling. 
-        It is designed as a user-friendly Streamlit web application for interactive exploration, comparison, and insights generation.
+ 
+<div style="text-align: justify; font-size: 17px; line-height: 1.55;">
+To reduce energy use and protect the environment, many countries are shifting toward clean alternatives 
+to fossil fuel vehicle power sources. Lithium-ion batteries have become widely used because they offer 
+high energy density, long life, and no memory effect. As these batteries operate over time, their 
+capacity decreases and their internal resistance increases. This process is known as battery aging and 
+it affects both performance and safety, as well as the accuracy of important indicators such as the 
+State of Charge (SOC). SOC represents the amount of usable charge left in the battery at any moment.
+
+A battery is considered to have reached the end of its life when its capacity falls to about 80 percent 
+of its original value or when its internal resistance doubles. At this stage, the battery can no longer 
+meet performance needs and continued use may create safety risks. For this reason it is important to 
+estimate the State of Health (SOH) and the Remaining Useful Life (RUL). SOH describes the overall aging 
+condition of the battery compared to when it was new, while RUL indicates how much time or how many cycles 
+remain before the battery reaches the end of its life. RUL depends directly on SOH.
+
+Because SOH and RUL cannot be measured during operation, they must be estimated from battery behavior such 
+as voltage, temperature, charge, and energy data. Recent data-driven methods and feature extraction 
+techniques are improving the accuracy of these estimates and supporting safer and more efficient battery use.
+
+This project presents a comprehensive framework for analyzing and forecasting the health of electric vehicle 
+(EV) batteries, focusing on State of Health (SOH) and Remaining Useful Life (RUL). The framework is 
+missing-data–aware, supporting multiple datasets with advanced preprocessing, visualization, and predictive 
+modeling. It is designed as a user-friendly Streamlit web application for interactive exploration, comparison, 
+and insights generation.
+</div>
+
+
        
         """
     )
@@ -2537,6 +2549,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
