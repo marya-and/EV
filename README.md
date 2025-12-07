@@ -1,4 +1,4 @@
-# Robust EV Battery SOH & RUL: A Missing-Data–Aware Analytics and Visualization Framework
+# Robust EV Battery SOH & RUL
 This app is a data science project for EV battery health. 
 
 You can:
