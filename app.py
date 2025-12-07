@@ -783,8 +783,6 @@ with tabs[0]:
 
    
 
- 
-<div style="text-align: justify; font-size: 17px; line-height: 1.55;">
 To reduce energy use and protect the environment, many countries are shifting toward clean alternatives 
 to fossil fuel vehicle power sources. Lithium-ion batteries have become widely used because they offer 
 high energy density, long life, and no memory effect. As these batteries operate over time, their 
@@ -808,7 +806,7 @@ This project presents a comprehensive framework for analyzing and forecasting th
 missing-data–aware, supporting multiple datasets with advanced preprocessing, visualization, and predictive 
 modeling. It is designed as a user-friendly Streamlit web application for interactive exploration, comparison, 
 and insights generation.
-</div>
+
 
 
        
@@ -2549,6 +2547,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
