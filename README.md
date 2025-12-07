@@ -117,15 +117,6 @@ The framework is **missing-data–aware**, supporting multiple datasets with adv
 
 ---
 
-
-
-## 📌 Notes
-
-* Designed for **robust missing-data handling**.
-* Works with **any uploaded dataset** .
-* Can be easily extended to other battery types or domains.
-
----
 ## Quick tab guide
 
 📖 **Introduction:** story & tab descriptions  
@@ -138,6 +129,14 @@ The framework is **missing-data–aware**, supporting multiple datasets with adv
 🔮 **Predictions & Forecasting:** RUL and SOH time-series forecast  
 🌍 **Insights & Rubric:** real-world conclusions & rubric mapping  
 💾 **Export:** download cleaned data for GitHub  
+
+---
+
+## 📌 Notes
+
+* Designed for **robust missing-data handling**.
+* Works with **any uploaded dataset** .
+* Can be easily extended to other battery types or domains.
 
 ---
 Marya Andleeb
