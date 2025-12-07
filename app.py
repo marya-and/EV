@@ -761,7 +761,10 @@ with tabs[0]:
 
     st.markdown(
         """
-        This app is a full **end‑to‑end data science project** for **EV battery health**.
+        This app is a full **end‑to‑end data science project** for **EV battery health**. This project presents a comprehensive framework 
+        for analyzing and forecasting the health of electric vehicle (EV) batteries, focusing on State of Health (SOH) and Remaining Useful Life (RUL).
+The framework is missing-data–aware, supporting multiple datasets with advanced preprocessing, visualization, and predictive modeling. 
+It is designed as a user-friendly Streamlit web application for interactive exploration, comparison, and insights generation.
 
        
         You can:
@@ -776,8 +779,8 @@ with tabs[0]:
         - **Feature engineering** (thermal, energy, stress)
         - **Encoding** (numeric, categorical, text → TF‑IDF)
         - **Classical models** (Linear Regression, RandomForest, GradientBoosting)
-        - **Advanced models** (deep neural network MLP, XGBoost when available)
-        - **Time series forecasting** (AutoReg SOH)
+        - **Advanced models** (deep neural network MLP, XGBoost)
+        - **Time series forecasting** (SOH)
         - **Rich visualizations**: histograms, box/violin, scatter, 3D scatter,
           scatter matrix, PCA, correlation & missingness heatmaps, etc.
 
@@ -2535,6 +2538,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
