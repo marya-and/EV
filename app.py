@@ -795,7 +795,10 @@ with tabs[0]:
         how many cycles remain before the battery reaches the end of its life. RUL depends directly on SOH.
         Because SOH and RUL cannot be measured during operation, they must be estimated from battery behavior such as voltage, 
         temperature, charge and energy data. Recent data driven methods and feature extraction techniques are improving the accuracy of these estimates 
-        and supporting safer and more efficient battery use.
+        and supporting safer and more efficient battery use.  This project presents a comprehensive framework 
+        for analyzing and forecasting the health of electric vehicle (EV) batteries, focusing on State of Health (SOH) and Remaining Useful Life (RUL).
+        The framework is missing-data–aware, supporting multiple datasets with advanced preprocessing, visualization, and predictive modeling. 
+        It is designed as a user-friendly Streamlit web application for interactive exploration, comparison, and insights generation.
        
         """
     )
@@ -2534,6 +2537,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
