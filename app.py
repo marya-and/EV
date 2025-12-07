@@ -760,28 +760,26 @@ with tabs[0]:
     st.title("🔋 Robust EV Battery SOH & RUL Dashboard")
 
     st.markdown(
-        """
-        This app is a full **end‑to‑end data science project** for **EV battery health**. 
+    """
+This app is a full **end-to-end data science project** for **EV battery health**.
 
-       
-        You can:
-        - Work with 3 datasets: **Urban**, **Highway**, **Mixed**.
-        - You can also upload **multiple CSV files** → each becomes `Upload_1`, `Upload_2`, etc.
-        - Analyse them **individually**, **side‑by‑side**, or **all combined**.
+You can:
+- Work with 3 datasets: **Urban**, **Highway**, **Mixed**
+- Upload **multiple CSV files** → each becomes `Upload_1`, `Upload_2`, etc.
+- Analyse them **individually**, **side-by-side**, or **all combined**
 
-        
+We include:
+- **Missing data** (MCAR + MAR)
+- **Feature engineering** (thermal, energy, stress)
+- **Encoding** (numeric, categorical, text → TF-IDF)
+- **Classical models** (Linear Regression, RandomForest, GradientBoosting)
+- **Advanced models** (Deep Neural Network MLP, XGBoost)
+- **Time-series forecasting** (SOH)
+- **Rich visualizations**: histograms, box/violin, scatter, 3D scatter,
+  scatter matrix, PCA, correlation & missingness heatmaps, parallel coordinates, etc.
 
-        We include:
-        - **Missing data** (MCAR + MAR)
-        - **Feature engineering** (thermal, energy, stress)
-        - **Encoding** (numeric, categorical, text → TF‑IDF)
-        - **Classical models** (Linear Regression, RandomForest, GradientBoosting)
-        - **Advanced models** (deep neural network MLP, XGBoost)
-        - **Time series forecasting** (SOH)
-        - **Rich visualizations**: histograms, box/violin, scatter, 3D scatter,
-          scatter matrix, PCA, correlation & missingness heatmaps, etc.
+---
 
-   
 To reduce energy use and protect the environment, many countries are shifting toward clean alternatives 
 to fossil fuel vehicle power sources. Lithium-ion batteries have become widely used because they offer 
 high energy density, long life, and no memory effect. As these batteries operate over time, their 
@@ -803,10 +801,11 @@ techniques are improving the accuracy of these estimates and supporting safer an
 This project presents a comprehensive framework for analyzing and forecasting the health of electric vehicle 
 (EV) batteries, focusing on State of Health (SOH) and Remaining Useful Life (RUL). The framework is 
 missing-data–aware, supporting multiple datasets with advanced preprocessing, visualization, and predictive 
-modeling. It is designed as a user-friendly Streamlit web application for interactive exploration, comparison, 
-and insights generation.   
-        """
-    )
+modeling. It is designed as a user-friendly Streamlit web application for interactive exploration, 
+comparison, and insights generation.
+"""
+)
+
     st.markdown("#### Quick tab guide")
     st.write(
         """
@@ -2542,6 +2541,7 @@ with tabs[9]:
     st.caption(
         "Tip: put this CSV in `data/` in your GitHub repo and describe all columns in a data dictionary."
     )
+
 
 
 
