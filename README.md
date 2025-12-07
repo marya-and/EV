@@ -127,16 +127,16 @@ The framework is **missing-data–aware**, supporting multiple datasets with adv
 
 ---
 Quick tab guide
-📖 Introduction: story & tab descriptions.
-🏠 Summary: KPIs + dataset mix + key plots.
-📦 Data Overview: table, data types, stats, per‑dataset summary.
-📊 EDA & Viz Gallery: all the classic EDA plots.
-🧩 Missingness Lab: missing patterns + imputation comparison.
-🔁 Encoding & Classical Models: before/after encoding + RF/GB/LR + RF tuning.
-🧠 Deep Learning & Ensembles: neural net (MLP) + XGBoost (if installed).
-🔮 Predictions & Forecasting: RUL and SOH time‑series forecast.
-🌍 Insights & Rubric: real‑world conclusions & rubric mapping.
-💾 Export: download cleaned & engineered data for GitHub.
+📖 Introduction: story & tab descriptions. \\
+🏠 Summary: KPIs + dataset mix + key plots.\\
+📦 Data Overview: table, data types, stats, per‑dataset summary.\\
+📊 EDA & Viz Gallery: all the classic EDA plots.\\
+🧩 Missingness Lab: missing patterns + imputation comparison.\\
+🔁 Encoding & Classical Models: before/after encoding + RF/GB/LR + RF tuning.\\
+🧠 Deep Learning & Ensembles: neural net (MLP) + XGBoost .\\
+🔮 Predictions & Forecasting: RUL and SOH time‑series forecast.\\
+🌍 Insights & Rubric: real‑world conclusions & rubric mapping.\\
+💾 Export: download cleaned data for GitHub. \\
 
 ---
 Marya Andleeb
