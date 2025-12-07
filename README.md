@@ -139,7 +139,7 @@ The framework is **missing-data–aware**, supporting multiple datasets with adv
 * Can be easily extended to other battery types or domains.
 
 ---
-Marya Andleeb
+by Marya Andleeb
 
 
 
